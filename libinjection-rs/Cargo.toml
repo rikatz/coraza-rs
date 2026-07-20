@@ -1,0 +1,27 @@
+[package]
+name = "libinjection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["legacy"]
+std = ["memchr/std"]
+legacy = []
+deep = ["dep:sqlparser", "alloc"]
+alloc = []
+
+[dependencies]
+memchr = { version = "2", default-features = false }
+sqlparser = { version = "0.62", optional = true, default-features = false, features = ["std"] }
+
+[build-dependencies]
+# phf_codegen added when legacy tables are generated (L5)
