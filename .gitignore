@@ -1,0 +1,41 @@
+# Cargo build output
+target
+
+# Test artifacts
+**/*.db
+
+# Rustfmt backup files
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.pyc
+
+# MSVC debugging symbols
+*.pdb
+
+# Cargo mutants output
+**/mutants.out*/
+
+# LLVM coverage artifacts
+coverage/
+coverage.json
+*.profraw
+*.profdata
+
+# IDEs
+.idea/
+
+# Dotdirs (allow .cargo/, .github/, .claude/, and .hooks/)
+.*/
+!.cargo/
+!.github/
+!.claude/
+!.hooks/
+.claude/*
+!.claude/CLAUDE.md
+
+# Docs are markdown only
+docs/**/*
+!docs/**/*.md
+!docs/**/
