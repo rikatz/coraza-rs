@@ -44,7 +44,7 @@ limitations under the License.
 "#;
 
 /// Directory names skipped while walking the workspace for `.rs` files.
-const SKIPPED_DIRS: [&str; 2] = ["target", ".git"];
+const SKIPPED_DIRS: [&str; 3] = ["target", ".git", "coraza-rs"];
 
 // -----------------------------------------------------------------------------
 // CLI Arguments

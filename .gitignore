@@ -39,3 +39,4 @@ coverage.json
 docs/**/*
 !docs/**/*.md
 !docs/**/
+coraza-rs/
