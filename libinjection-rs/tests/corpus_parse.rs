@@ -15,18 +15,19 @@ limitations under the License.
 */
 
 //! Smoke tests for the corpus file parser.
+#![expect(clippy::tests_outside_test_module, reason = "integration test binary")]
+#![expect(clippy::unwrap_used, reason = "tests")]
+#![expect(clippy::panic, reason = "tests")]
+#![expect(clippy::print_stderr, reason = "baseline pass/fail reporting")]
+
 mod common;
 
-use common::corpus::{
-    CorpusCase, DriverKind, ParseError, format_xss_expected, parse_corpus_file, parse_corpus_str, right_trim_line,
+use common::corpus::{CorpusCase, DriverKind, ParseError, parse_corpus_file, parse_corpus_str, right_trim_line};
+use common::drivers::{
+    actual_folding_output, actual_html5_output, actual_sqli_output, actual_tokens_output, actual_xss_output,
+    run_baseline,
 };
-use libinjection::detect_xss;
 use std::{fs, path::Path};
-
-fn actual_xss_output(input: &str) -> String {
-    let verdict = detect_xss(input.as_bytes());
-    format_xss_expected(verdict.detected).to_owned()
-}
 
 #[test]
 fn corpus_case_can_be_constructed() {
@@ -122,7 +123,7 @@ fn parse_real_folding_001() {
 #[test]
 fn all_corpus_files_parse() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
-    let mut count = 0usize;
+    let mut count = 0_usize;
     for entry in fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -176,48 +177,95 @@ fn every_corpus_file_has_a_driver_kind() {
 }
 
 #[test]
-fn xss_driver_stub_on_script_tag() {
+fn xss_driver_detects_script_fixture() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-xss-001.txt");
     let case = parse_corpus_file(&path).unwrap();
     assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Xss));
 
     let actual = actual_xss_output(&case.input);
-    // Stub never detects → "0"; this fixture expects "1".
-    assert_eq!(actual, "0");
-    assert_eq!(case.expected, "1");
+    assert_eq!(actual, "1");
+    assert_eq!(actual, case.expected);
+}
+
+#[test]
+fn sqli_driver_stub_on_sqli_001() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-sqli-001.txt");
+    let case = parse_corpus_file(&path).unwrap();
+    assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Sqli));
+    let actual = actual_sqli_output(&case.input);
+    assert_eq!(actual, "");
+    assert_eq!(actual, case.expected); // this fixture is benign / empty expected
+}
+
+#[test]
+fn folding_corpus_baseline_stub() {
+    let (passed, failed) = run_baseline(DriverKind::Folding, actual_folding_output);
+    eprintln!("folding stub baseline: {passed} passed, {failed} failed");
+    assert!(passed + failed > 0, "no folding fixtures found");
+}
+
+#[test]
+fn html5_corpus_baseline() {
+    let (passed, failed) = run_baseline(DriverKind::Html5, actual_html5_output);
+    eprintln!("html5 baseline: {passed} passed, {failed} failed");
+    assert!(passed + failed > 0, "no HTML5 fixtures found");
+    // Intentionally no assert_eq!(failed, 0) yet - climb parity fixture-by-fixture.
+}
+
+#[test]
+fn sqli_corpus_baseline_stub() {
+    let (passed, failed) = run_baseline(DriverKind::Sqli, actual_sqli_output);
+    eprintln!("sqli stub baseline: {passed} passed, {failed} failed");
+    assert!(passed + failed > 0, "no SQLi fixtures found");
+}
+
+#[test]
+fn xss_corpus_baseline() {
+    let (passed, failed) = run_baseline(DriverKind::Xss, actual_xss_output);
+    eprintln!("xss baseline: {passed} passed, {failed} failed");
+    assert!(passed + failed > 0, "no XSS fixtures found");
+    assert_eq!(failed, 0);
+}
+
+#[test]
+fn html5_driver_on_ascii_word() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-html5-001.txt");
+    let case = parse_corpus_file(&path).unwrap();
+    assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Html5));
+
+    let actual = actual_html5_output(&case.input);
+    assert_eq!(actual, "");
+    assert_eq!(case.expected, "DATA_TEXT,3,foo");
     assert_ne!(actual, case.expected);
 }
 
 #[test]
-fn xss_corpus_baseline_stub() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
-    let mut passed = 0usize;
-    let mut failed = 0usize;
+fn folding_driver_stub_on_folding_001() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-folding-001.txt");
+    let case = parse_corpus_file(&path).unwrap();
+    assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Folding));
 
-    for entry in fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !(filename.starts_with("test-") && filename.ends_with(".txt")) {
-            continue;
-        }
+    let actual = actual_folding_output(&case.input);
+    assert_eq!(actual, "");
+    assert!(case.expected.contains("SELECT"));
+    assert_ne!(actual, case.expected);
+}
 
-        let case = parse_corpus_file(&path).unwrap();
-        if DriverKind::from_name(&case.name) != Some(DriverKind::Xss) {
-            continue;
-        }
+#[test]
+fn tokens_driver_stub_on_words_002() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-tokens-words-002.txt");
+    let case = parse_corpus_file(&path).unwrap();
+    assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Tokens));
 
-        let actual = actual_xss_output(&case.input);
-        if actual == case.expected {
-            passed += 1;
-        } else {
-            failed += 1;
-            eprintln!("{}: got {actual:?} want {:?}", case.name, case.expected);
-        }
-    }
+    let actual = actual_tokens_output(&case.input);
+    assert_eq!(actual, "");
+    assert!(case.expected.contains("SELECT"));
+    assert_ne!(actual, case.expected);
+}
 
-    eprintln!("xss stub baseline: {passed} passed, {failed} failed");
-    assert!(passed + failed > 0, "no XSS fixtures found");
-    // Intentionally no assert_eq!(failed, 0) yet - engine not implemented.
+#[test]
+fn tokens_corpus_baseline_stub() {
+    let (passed, failed) = run_baseline(DriverKind::Tokens, actual_tokens_output);
+    eprintln!("tokens stub baseline: {passed} passed, {failed} failed");
+    assert!(passed + failed > 0, "no tokens fixtures found");
 }

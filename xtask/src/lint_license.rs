@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! `cargo xtask lint-license` — enforce the Apache-2.0 copyright header on
+//! `cargo xtask lint-license` - enforce the Apache-2.0 copyright header on
 //! every tracked `.rs` file.
 
 use clap::Parser;

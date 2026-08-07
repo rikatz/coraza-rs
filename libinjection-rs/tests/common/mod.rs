@@ -15,3 +15,4 @@ limitations under the License.
 */
 
 pub(crate) mod corpus;
+pub(crate) mod drivers;

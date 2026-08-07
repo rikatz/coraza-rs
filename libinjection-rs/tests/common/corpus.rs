@@ -49,15 +49,15 @@ pub(crate) enum ParseError {
 /// Which legacy corpus driver should run this fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DriverKind {
-    /// `test-sqli-*.txt` — fingerprint / `IsSQLi`.
+    /// `test-sqli-*.txt` - fingerprint / `IsSQLi`.
     Sqli,
-    /// `test-folding-*.txt` — folded tokens.
+    /// `test-folding-*.txt` - folded tokens.
     Folding,
-    /// `test-tokens-*.txt` — raw ANSI tokenize (incl. `tokens_mysql` if you fold that in later).
+    /// `test-tokens-*.txt` - raw ANSI tokenize (incl. `tokens_mysql` if you fold that in later).
     Tokens,
-    /// `test-html5-*.txt` — HTML5 tokenizer dump.
+    /// `test-html5-*.txt` - HTML5 tokenizer dump.
     Html5,
-    /// `test-xss-*.txt` — `IsXSS` → `1` / `0`.
+    /// `test-xss-*.txt` - `IsXSS` -> `1` / `0`.
     Xss,
 }
 
@@ -177,12 +177,6 @@ pub(crate) fn parse_corpus_file(path: &Path) -> Result<CorpusCase, ParseError> {
         .ok_or_else(|| ParseError::Io(format!("bad corpus path: {}", path.display())))?;
 
     parse_corpus_str(name, &contents)
-}
-
-/// Go `IsXSS` corpus encoding: detected → `"1"`, else `"0"`.
-#[must_use]
-pub(crate) fn format_xss_expected(detected: bool) -> &'static str {
-    if detected { "1" } else { "0" }
 }
 
 fn join_lines(lines: &[String]) -> String {

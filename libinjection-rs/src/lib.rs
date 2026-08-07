@@ -88,17 +88,23 @@ pub fn detect_sqli_with(input: &[u8], opts: AnalyzeOptions) -> DetectionVerdict 
     }
 }
 
-/// Built-in minimal policy for Coraza `@detectXSS` (stub: never detects).
+/// Built-in minimal policy for Coraza `@detectXSS`
 #[must_use]
 pub fn detect_xss(input: &[u8]) -> DetectionVerdict {
     detect_xss_with(input, AnalyzeOptions::default())
 }
 
-/// Coraza `@detectXSS` with caller scan budget (stub).
+/// Coraza `@detectXSS` with caller scan budget.
 #[must_use]
 pub fn detect_xss_with(input: &[u8], opts: AnalyzeOptions) -> DetectionVerdict {
+    let _ = opts; // scan budget applied when we truncate in a later step
+    #[cfg(feature = "legacy")]
+    let detected = xss::legacy::detect(input);
+    #[cfg(not(feature = "legacy"))]
+    let detected = false;
+
     DetectionVerdict {
-        detected: false,
+        detected,
         snapshot: analyze_xss_with(input, opts),
     }
 }
@@ -119,9 +125,13 @@ mod tests {
     }
 
     #[test]
-    fn stub_does_not_detect_yet() {
+    fn detect_sqli_still_stub() {
         assert!(!detect_sqli(b"1' OR '1'='1").detected);
-        assert!(!detect_xss(b"<script>alert(1)</script>").detected);
+    }
+
+    #[test]
+    fn detect_xss_flags_deny_script() {
+        assert!(detect_xss(b"<script>alert(1)</script>").detected);
     }
 
     #[test]

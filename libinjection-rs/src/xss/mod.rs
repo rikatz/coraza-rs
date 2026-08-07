@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! XSS analysis: stage-1 constructs plus optional legacy HTML5 blacklist path.
+//! XSS analysis: stage-1 constructs plus optional legacy HTML5 denylist path.
 
 #[cfg(feature = "legacy")]
 pub(crate) mod legacy;
