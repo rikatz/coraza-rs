@@ -15,11 +15,28 @@ limitations under the License.
 */
 
 //! Corpus driver output formatting (Go encoding).
-use libinjection::detect_xss;
+use libinjection::{
+    Html5TokenKind, SqliTokenInfo, XssHtmlContext, detect_sqli, detect_xss, html5_visit, sqli_fold_visit,
+    sqli_tokenize_visit,
+};
 use std::fs;
 use std::path::Path;
 
 use super::corpus::{DriverKind, parse_corpus_file};
+
+fn html5_type_label(kind: Html5TokenKind) -> &'static str {
+    match kind {
+        Html5TokenKind::DataText => "DATA_TEXT",
+        Html5TokenKind::TagNameOpen => "TAG_NAME_OPEN",
+        Html5TokenKind::TagNameClose => "TAG_NAME_CLOSE",
+        Html5TokenKind::TagNameSelfClose => "TAG_NAME_SELFCLOSE",
+        Html5TokenKind::TagClose => "TAG_CLOSE",
+        Html5TokenKind::AttrName => "ATTR_NAME",
+        Html5TokenKind::AttrValue => "ATTR_VALUE",
+        Html5TokenKind::TagComment => "TAG_COMMENT",
+        Html5TokenKind::DocType => "DOCTYPE",
+    }
+}
 
 /// Go `IsXSS` corpus encoding: detected -> `"1"`, else `"0"`.
 #[must_use]
@@ -53,8 +70,16 @@ pub(crate) fn format_folding_expected(token_lines: &[String]) -> String {
     token_lines.join("\n")
 }
 
-pub(crate) fn actual_folding_output(_input: &str) -> String {
-    format_folding_expected(&[])
+pub(crate) fn actual_folding_output(input: &str) -> String {
+    let flags = 1 | 8; // FLAG_QUOTE_NONE | FLAG_SQL_ANSI
+    let mut lines = Vec::new();
+    sqli_fold_visit(input.as_bytes(), flags, |tok| {
+        let line = format_token_line(&tok);
+        let trimmed = line.trim_end_matches([' ', '\t', '\r']);
+        lines.push(trimmed.to_owned());
+    });
+    let joined = format_folding_expected(&lines);
+    joined.trim().to_owned()
 }
 
 pub(crate) fn actual_xss_output(input: &str) -> String {
@@ -62,18 +87,78 @@ pub(crate) fn actual_xss_output(input: &str) -> String {
     format_xss_expected(verdict.detected).to_owned()
 }
 
-pub(crate) fn actual_sqli_output(_input: &str) -> String {
-    // Stub: detect_sqli never sets a fingerprint yet.
-    format_sqli_expected(None)
+pub(crate) fn actual_sqli_output(input: &str) -> String {
+    let verdict = detect_sqli(input.as_bytes());
+    if verdict.detected {
+        let fp = verdict.snapshot.legacy_fingerprint;
+        let fp_str = fp.as_str().unwrap_or("");
+        format_sqli_expected(Some(fp_str))
+    } else {
+        format_sqli_expected(None)
+    }
 }
 
-pub(crate) fn actual_html5_output(_input: &str) -> String {
-    format_html5_expected(&[])
+pub(crate) fn actual_html5_output(input: &str) -> String {
+    let mut lines = Vec::new();
+    html5_visit(input.as_bytes(), XssHtmlContext::Data, |kind, value| {
+        let text = String::from_utf8_lossy(value);
+        lines.push(format!("{},{},{}", html5_type_label(kind), value.len(), text));
+    });
+    // Go `runXSSTest` applies `strings.TrimSpace` before compare.
+    format_html5_expected(&lines).trim().to_owned()
 }
 
-pub(crate) fn actual_tokens_output(_input: &str) -> String {
-    // Stub: no SQL tokenizer yet.
-    format_tokens_expected(&[])
+pub(crate) fn actual_tokens_output(input: &str) -> String {
+    let flags = 1 | 8; // FLAG_QUOTE_NONE | FLAG_SQL_ANSI
+    let mut lines = Vec::new();
+    sqli_tokenize_visit(input.as_bytes(), flags, |tok| {
+        let line = format_token_line(&tok);
+        // Match corpus parser: right-trim each line (spaces, tabs, \r).
+        let trimmed = line.trim_end_matches([' ', '\t', '\r']);
+        lines.push(trimmed.to_owned());
+    });
+    let joined = format_tokens_expected(&lines);
+    joined.trim().to_owned()
+}
+
+/// Format one SQL token per Go `printToken`.
+fn format_token_line(tok: &SqliTokenInfo) -> String {
+    let cat = tok.category as char;
+    let val = core::str::from_utf8(tok.val.get(..tok.len).unwrap_or(&tok.val)).unwrap_or("");
+
+    let mut out = String::new();
+    out.push(cat);
+    out.push(' ');
+    match tok.category {
+        b's' => {
+            if tok.str_open != 0 {
+                out.push(tok.str_open as char);
+            }
+            out.push_str(val);
+            if tok.str_close != 0 {
+                out.push(tok.str_close as char);
+            }
+        },
+        b'v' => {
+            if tok.count == 1 {
+                out.push('@');
+            } else if tok.count == 2 {
+                out.push('@');
+                out.push('@');
+            }
+            if tok.str_open != 0 {
+                out.push(tok.str_open as char);
+            }
+            out.push_str(val);
+            if tok.str_close != 0 {
+                out.push(tok.str_close as char);
+            }
+        },
+        _ => {
+            out.push_str(val);
+        },
+    }
+    out.trim_end_matches(['\n', '\r']).to_owned()
 }
 
 /// Walk vendored fixtures for `kind`, compare stub/engine output to `--EXPECTED--`.

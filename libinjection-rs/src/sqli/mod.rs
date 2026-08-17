@@ -16,5 +16,7 @@ limitations under the License.
 
 //! `SQLi` analysis: stage-1 constructs plus optional legacy fingerprint engine.
 
+pub(crate) mod modern;
+
 #[cfg(feature = "legacy")]
 pub(crate) mod legacy;

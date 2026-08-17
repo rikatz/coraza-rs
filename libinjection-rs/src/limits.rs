@@ -67,3 +67,12 @@ pub const fn clamp_max_input_len(requested: usize) -> usize {
         requested
     }
 }
+
+/// Return the prefix of `input` to scan and whether the input was truncated.
+#[must_use]
+pub fn scan_prefix(input: &[u8], max_len: usize) -> (&[u8], bool) {
+    match input.get(..max_len) {
+        Some(prefix) if prefix.len() < input.len() => (prefix, true),
+        _ => (input, false),
+    }
+}

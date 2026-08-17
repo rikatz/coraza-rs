@@ -14,9 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! XSS analysis: stage-1 constructs plus optional legacy HTML5 denylist path.
+//! Shared stage-1 engine: prefilter, normalize, tokenize, verdict.
 
-pub(crate) mod modern;
-
-#[cfg(feature = "legacy")]
-pub(crate) mod legacy;
+pub(crate) mod ascii;
+pub(crate) mod normalize;
+pub(crate) mod prefilter;
+pub(crate) mod token;
+pub(crate) mod verdict;

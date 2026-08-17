@@ -188,20 +188,20 @@ fn xss_driver_detects_script_fixture() {
 }
 
 #[test]
-fn sqli_driver_stub_on_sqli_001() {
+fn sqli_driver_on_sqli_001() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-sqli-001.txt");
     let case = parse_corpus_file(&path).unwrap();
     assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Sqli));
     let actual = actual_sqli_output(&case.input);
-    assert_eq!(actual, "");
-    assert_eq!(actual, case.expected); // this fixture is benign / empty expected
+    assert_eq!(actual, case.expected);
 }
 
 #[test]
-fn folding_corpus_baseline_stub() {
+fn folding_corpus_baseline() {
     let (passed, failed) = run_baseline(DriverKind::Folding, actual_folding_output);
-    eprintln!("folding stub baseline: {passed} passed, {failed} failed");
+    eprintln!("folding baseline: {passed} passed, {failed} failed");
     assert!(passed + failed > 0, "no folding fixtures found");
+    assert_eq!(failed, 0);
 }
 
 #[test]
@@ -209,14 +209,15 @@ fn html5_corpus_baseline() {
     let (passed, failed) = run_baseline(DriverKind::Html5, actual_html5_output);
     eprintln!("html5 baseline: {passed} passed, {failed} failed");
     assert!(passed + failed > 0, "no HTML5 fixtures found");
-    // Intentionally no assert_eq!(failed, 0) yet - climb parity fixture-by-fixture.
+    assert_eq!(failed, 0);
 }
 
 #[test]
-fn sqli_corpus_baseline_stub() {
+fn sqli_corpus_baseline() {
     let (passed, failed) = run_baseline(DriverKind::Sqli, actual_sqli_output);
-    eprintln!("sqli stub baseline: {passed} passed, {failed} failed");
+    eprintln!("sqli baseline: {passed} passed, {failed} failed");
     assert!(passed + failed > 0, "no SQLi fixtures found");
+    assert_eq!(failed, 0);
 }
 
 #[test]
@@ -234,38 +235,36 @@ fn html5_driver_on_ascii_word() {
     assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Html5));
 
     let actual = actual_html5_output(&case.input);
-    assert_eq!(actual, "");
     assert_eq!(case.expected, "DATA_TEXT,3,foo");
-    assert_ne!(actual, case.expected);
+    assert_eq!(actual, case.expected);
 }
 
 #[test]
-fn folding_driver_stub_on_folding_001() {
+fn folding_driver_on_folding_001() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-folding-001.txt");
     let case = parse_corpus_file(&path).unwrap();
     assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Folding));
 
     let actual = actual_folding_output(&case.input);
-    assert_eq!(actual, "");
     assert!(case.expected.contains("SELECT"));
-    assert_ne!(actual, case.expected);
+    assert_eq!(actual, case.expected);
 }
 
 #[test]
-fn tokens_driver_stub_on_words_002() {
+fn tokens_driver_on_words_002() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/test-tokens-words-002.txt");
     let case = parse_corpus_file(&path).unwrap();
     assert_eq!(DriverKind::from_name(&case.name), Some(DriverKind::Tokens));
 
     let actual = actual_tokens_output(&case.input);
-    assert_eq!(actual, "");
     assert!(case.expected.contains("SELECT"));
-    assert_ne!(actual, case.expected);
+    assert_eq!(actual, case.expected);
 }
 
 #[test]
-fn tokens_corpus_baseline_stub() {
+fn tokens_corpus_baseline() {
     let (passed, failed) = run_baseline(DriverKind::Tokens, actual_tokens_output);
-    eprintln!("tokens stub baseline: {passed} passed, {failed} failed");
+    eprintln!("tokens baseline: {passed} passed, {failed} failed");
     assert!(passed + failed > 0, "no tokens fixtures found");
+    assert_eq!(failed, 0);
 }

@@ -29,13 +29,15 @@ pub mod limits;
 pub mod options;
 pub mod snapshot;
 
+mod engine;
+mod policy;
 mod sqli;
 mod xss;
 
 pub use flags::SqliFlags;
 pub use limits::{
     ABSOLUTE_MAX_INPUT_LEN, DEEP_MAX_INPUT_LEN, DEFAULT_MAX_INPUT_LEN, MAX_EVIDENCE, MAX_INPUT_LEN, MAX_STACK_BUDGET,
-    MAX_TOKEN_SLOTS, NORM_BUF_LEN, clamp_max_input_len,
+    MAX_TOKEN_SLOTS, NORM_BUF_LEN, clamp_max_input_len, scan_prefix,
 };
 pub use options::AnalyzeOptions;
 pub use snapshot::{
@@ -51,12 +53,18 @@ pub fn analyze_sqli(input: &[u8]) -> AnalysisSnapshot {
     analyze_sqli_with(input, AnalyzeOptions::default())
 }
 
-/// `SQLi` analysis with a caller scan budget (clamped in Phase 2b).
-///
-/// Stub: always [`AnalysisSnapshot::benign`].
+/// `SQLi` analysis with a caller scan budget.
 #[must_use]
-pub fn analyze_sqli_with(_input: &[u8], _opts: AnalyzeOptions) -> AnalysisSnapshot {
-    AnalysisSnapshot::benign()
+pub fn analyze_sqli_with(input: &[u8], opts: AnalyzeOptions) -> AnalysisSnapshot {
+    let (slice, truncated) = scan_prefix(input, opts.effective_max_input_len());
+    finish_sqli_snapshot(sqli::modern::analyze(slice, opts), truncated)
+}
+
+/// XSS analysis with a caller scan budget.
+#[must_use]
+pub fn analyze_xss_with(input: &[u8], opts: AnalyzeOptions) -> AnalysisSnapshot {
+    let (slice, truncated) = scan_prefix(input, opts.effective_max_input_len());
+    finish_xss_snapshot(xss::modern::analyze(slice, opts), truncated)
 }
 
 /// Primary hot-path XSS analysis.
@@ -65,27 +73,28 @@ pub fn analyze_xss(input: &[u8]) -> AnalysisSnapshot {
     analyze_xss_with(input, AnalyzeOptions::default())
 }
 
-/// XSS analysis with a caller scan budget.
-///
-/// Stub: always [`AnalysisSnapshot::benign`].
-#[must_use]
-pub fn analyze_xss_with(_input: &[u8], _opts: AnalyzeOptions) -> AnalysisSnapshot {
-    AnalysisSnapshot::benign()
-}
-
-/// Built-in minimal policy for Coraza `@detectSQLi` (stub: never detects).
+/// Built-in minimal policy for Coraza `@detectSQLi`.
 #[must_use]
 pub fn detect_sqli(input: &[u8]) -> DetectionVerdict {
     detect_sqli_with(input, AnalyzeOptions::default())
 }
 
-/// Coraza `@detectSQLi` with caller scan budget (stub).
+/// Coraza `@detectSQLi` with caller scan budget.
 #[must_use]
 pub fn detect_sqli_with(input: &[u8], opts: AnalyzeOptions) -> DetectionVerdict {
-    DetectionVerdict {
-        detected: false,
-        snapshot: analyze_sqli_with(input, opts),
-    }
+    let (slice, truncated) = scan_prefix(input, opts.effective_max_input_len());
+    let mut snapshot = finish_sqli_snapshot(sqli::modern::analyze(slice, opts), truncated);
+
+    let construct_hit = snapshot.constructs.intersects(policy::BUILTIN_SQLI_DETECT);
+
+    #[cfg(feature = "legacy")]
+    let legacy_hit = merge_legacy_sqli(&mut snapshot, slice);
+
+    #[cfg(not(feature = "legacy"))]
+    let legacy_hit = false;
+
+    let detected = construct_hit || legacy_hit;
+    DetectionVerdict { detected, snapshot }
 }
 
 /// Built-in minimal policy for Coraza `@detectXSS`
@@ -97,16 +106,58 @@ pub fn detect_xss(input: &[u8]) -> DetectionVerdict {
 /// Coraza `@detectXSS` with caller scan budget.
 #[must_use]
 pub fn detect_xss_with(input: &[u8], opts: AnalyzeOptions) -> DetectionVerdict {
-    let _ = opts; // scan budget applied when we truncate in a later step
-    #[cfg(feature = "legacy")]
-    let detected = xss::legacy::detect(input);
-    #[cfg(not(feature = "legacy"))]
-    let detected = false;
+    let (slice, truncated) = scan_prefix(input, opts.effective_max_input_len());
+    let snapshot = finish_xss_snapshot(xss::modern::analyze(slice, opts), truncated);
 
-    DetectionVerdict {
-        detected,
-        snapshot: analyze_xss_with(input, opts),
+    let construct_hit = snapshot.constructs.intersects(policy::BUILTIN_XSS_DETECT);
+
+    #[cfg(feature = "legacy")]
+    let legacy_hit = xss::legacy::detect(slice);
+
+    #[cfg(not(feature = "legacy"))]
+    let legacy_hit = false;
+
+    let detected = construct_hit || legacy_hit;
+    DetectionVerdict { detected, snapshot }
+}
+
+#[cfg(feature = "legacy")]
+pub use xss::legacy::{Html5TokenKind, html5_visit};
+
+#[cfg(feature = "legacy")]
+pub use sqli::legacy::{SqliTokenInfo, sqli_fold_visit, sqli_tokenize_visit};
+
+/// Apply scan truncation flags and refresh verdict hint for `SQLi`.
+fn finish_sqli_snapshot(mut snap: AnalysisSnapshot, truncated: bool) -> AnalysisSnapshot {
+    if truncated {
+        snap.flags = AnalysisFlags(snap.flags.0 | AnalysisFlags::TRUNCATED);
+        snap.verdict_hint = engine::verdict::verdict_hint(snap.constructs, snap.flags, policy::BUILTIN_SQLI_DETECT);
     }
+    snap
+}
+
+/// Apply scan truncation flags and refresh verdict hint for XSS.
+fn finish_xss_snapshot(mut snap: AnalysisSnapshot, truncated: bool) -> AnalysisSnapshot {
+    if truncated {
+        snap.flags = AnalysisFlags(snap.flags.0 | AnalysisFlags::TRUNCATED);
+        snap.verdict_hint = engine::verdict::verdict_hint(snap.constructs, snap.flags, policy::BUILTIN_XSS_DETECT);
+    }
+    snap
+}
+
+/// Run legacy fingerprint detection and copy into `snapshot` when hit.
+#[cfg(feature = "legacy")]
+fn merge_legacy_sqli(snapshot: &mut AnalysisSnapshot, slice: &[u8]) -> bool {
+    let (hit, fp_bytes, fp_len) = sqli::legacy::detect_with_fingerprint(slice);
+    if hit {
+        let end = usize::from(fp_len).min(8);
+        if let (Some(dst), Some(src)) = (snapshot.legacy_fingerprint.bytes.get_mut(..end), fp_bytes.get(..end)) {
+            dst.copy_from_slice(src);
+            snapshot.legacy_fingerprint.len = fp_len.min(8);
+            snapshot.flags = AnalysisFlags(snapshot.flags.0 | AnalysisFlags::LEGACY_FP_AVAILABLE);
+        }
+    }
+    hit
 }
 
 #[cfg(test)]
@@ -125,13 +176,26 @@ mod tests {
     }
 
     #[test]
-    fn detect_sqli_still_stub() {
-        assert!(!detect_sqli(b"1' OR '1'='1").detected);
+    fn detect_sqli_detects_classic_injection() {
+        assert!(detect_sqli(b"1' OR '1'='1").detected);
     }
 
     #[test]
     fn detect_xss_flags_deny_script() {
         assert!(detect_xss(b"<script>alert(1)</script>").detected);
+    }
+
+    #[test]
+    fn analyze_sqli_populates_constructs() {
+        let snap = analyze_sqli(b"1' UNION SELECT null--");
+        assert!(snap.constructs.any_sqli());
+        assert!(!snap.flags.contains(AnalysisFlags::PREFILTER_MISS));
+    }
+
+    #[test]
+    fn analyze_xss_populates_constructs() {
+        let snap = analyze_xss(b"<script>alert(1)</script>");
+        assert!(snap.constructs.any_xss());
     }
 
     #[test]
@@ -150,8 +214,18 @@ mod tests {
     }
 
     #[test]
-    fn analyze_options_clamps_to_absolute_max() {
-        let opts = AnalyzeOptions::with_max_input_len(usize::MAX);
-        assert_eq!(opts.effective_max_input_len(), ABSOLUTE_MAX_INPUT_LEN);
+    fn detect_sqli_respects_scan_budget() {
+        let long = [b'a'; DEFAULT_MAX_INPUT_LEN + 100];
+        let opts = AnalyzeOptions::default();
+        let verdict = detect_sqli_with(&long, opts);
+        assert!(verdict.snapshot.flags.contains(AnalysisFlags::TRUNCATED));
+    }
+
+    #[test]
+    fn detect_xss_respects_scan_budget() {
+        let long = [b'a'; DEFAULT_MAX_INPUT_LEN + 100];
+        let opts = AnalyzeOptions::default();
+        let verdict = detect_xss_with(&long, opts);
+        assert!(verdict.snapshot.flags.contains(AnalysisFlags::TRUNCATED));
     }
 }

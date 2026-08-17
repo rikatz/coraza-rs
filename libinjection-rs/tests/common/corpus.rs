@@ -161,10 +161,15 @@ pub(crate) fn parse_corpus_str(name: &str, contents: &str) -> Result<CorpusCase,
 
     Ok(CorpusCase {
         name: name.to_owned(),
-        description: join_lines(&description_lines),
-        input: join_lines(&input_lines),
-        expected: join_lines(&expected_lines),
+        description: trim_section_trailing_ws(&join_lines(&description_lines)),
+        input: trim_section_trailing_ws(&join_lines(&input_lines)),
+        expected: trim_section_trailing_ws(&join_lines(&expected_lines)),
     })
+}
+
+/// Right-trim section bodies (Go `readTestData` + `modp_rtrim` on `--INPUT--` / `--EXPECTED--`).
+fn trim_section_trailing_ws(s: &str) -> String {
+    s.trim_end_matches([' ', '\t', '\r', '\n']).to_owned()
 }
 
 /// Read `path` and parse it as one corpus fixture.

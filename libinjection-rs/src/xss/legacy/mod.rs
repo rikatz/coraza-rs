@@ -85,6 +85,64 @@ pub(crate) fn detect(input: &[u8]) -> bool {
         || is_xss(input, Html5Flags::ValueBackQuote)
 }
 
+/// Public HTML5 token kind (`html5Type*` in Go).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Html5TokenKind {
+    /// Raw text / CDATA body.
+    DataText,
+    /// Opening tag name.
+    TagNameOpen,
+    /// `>` closing an open tag.
+    TagNameClose,
+    /// `/>` self-closing end.
+    TagNameSelfClose,
+    /// Close tag name (`</name>`).
+    TagClose,
+    /// Attribute name.
+    AttrName,
+    /// Attribute value.
+    AttrValue,
+    /// Comment or bogus comment body.
+    TagComment,
+    /// DOCTYPE declaration body.
+    DocType,
+}
+
+impl From<Html5Type> for Html5TokenKind {
+    fn from(kind: Html5Type) -> Self {
+        match kind {
+            Html5Type::DataText => Self::DataText,
+            Html5Type::TagNameOpen | Html5Type::TagData => Self::TagNameOpen,
+            Html5Type::TagNameClose => Self::TagNameClose,
+            Html5Type::TagNameSelfClose => Self::TagNameSelfClose,
+            Html5Type::TagClose => Self::TagClose,
+            Html5Type::AttrName => Self::AttrName,
+            Html5Type::AttrValue => Self::AttrValue,
+            Html5Type::TagComment => Self::TagComment,
+            Html5Type::DocType => Self::DocType,
+        }
+    }
+}
+
+/// Walk HTML5 tokens in the given context (zero-copy slices into `input`).
+pub fn html5_visit(
+    input: &[u8],
+    context: crate::snapshot::XssHtmlContext,
+    mut visit: impl FnMut(Html5TokenKind, &[u8]),
+) {
+    let flags = match context {
+        crate::snapshot::XssHtmlContext::Data => Html5Flags::DataState,
+        crate::snapshot::XssHtmlContext::AttrUnquoted => Html5Flags::ValueNoQuote,
+        crate::snapshot::XssHtmlContext::AttrSingle => Html5Flags::ValueSingleQuote,
+        crate::snapshot::XssHtmlContext::AttrDouble => Html5Flags::ValueDoubleQuote,
+        crate::snapshot::XssHtmlContext::AttrBacktick => Html5Flags::ValueBackQuote,
+    };
+    let mut h5 = Html5State::new(input, flags);
+    while let Some(tok) = h5.next_token() {
+        visit(tok.kind.into(), tok.value);
+    }
+}
+
 /// Go `html5Type*` token kinds.
 #[expect(
     dead_code,
@@ -137,6 +195,10 @@ pub(crate) struct Html5State<'a> {
     pub(crate) pos: usize,
     /// Defines if the current HTML5 state is parsing an open tag
     pub(crate) state: Html5ParseState,
+    /// Go `isClose`: parsing a close tag name (`</...>`).
+    is_close: bool,
+    /// After `AttrName`, the next `=` begins a value; otherwise `=` can start a name.
+    expect_attr_equals: bool,
 }
 
 impl<'a> Html5State<'a> {
@@ -150,7 +212,13 @@ impl<'a> Html5State<'a> {
             Html5Flags::ValueDoubleQuote => Html5ParseState::InAttrValue { quote: Some(b'"') },
             Html5Flags::ValueBackQuote => Html5ParseState::InAttrValue { quote: Some(b'`') },
         };
-        Self { input, pos: 0, state }
+        Self {
+            input,
+            pos: 0,
+            state,
+            is_close: false,
+            expect_attr_equals: false,
+        }
     }
 
     /// Go `h5.next()`: emit the next token, or `None` at EOF.
@@ -170,11 +238,10 @@ impl<'a> Html5State<'a> {
         self.skip_html_whitespace();
 
         match self.current()? {
-            b'/' => self.tag_close_self(),
+            b'/' => self.handle_slash_in_tag(),
             b'>' => self.tag_close(),
-            b'=' => self.attr_value(),
-            b if b.is_ascii_alphabetic() => self.attr_name(),
-            _ => None,
+            b'=' if self.expect_attr_equals => self.attr_value(),
+            _ => self.attr_name(),
         }
     }
 
@@ -227,7 +294,7 @@ impl<'a> Html5State<'a> {
     fn after_lt(&mut self) -> Option<Html5Token<'a>> {
         let first = self.current()?;
 
-        // <!-- ... -->  |  <!DOCTYPE ...>  |  <!...> bogus
+        // <!-- ... -->  |  <!DOCTYPE ...>  |  <![CDATA[...]]>  |  <!...> bogus
         if first == b'!' {
             self.advance(); // consume '!'
 
@@ -236,26 +303,15 @@ impl<'a> Html5State<'a> {
                 self.advance();
                 if self.current() == Some(b'-') {
                     self.advance(); // past "<!--"
-                    let start = self.pos;
-                    loop {
-                        match self.current() {
-                            None => break,
-                            Some(b'-') if self.input.get(self.pos..).is_some_and(|s| s.starts_with(b"-->")) => {
-                                break;
-                            },
-                            _ => self.advance(),
-                        }
-                    }
-                    let body = self.slice_from(start)?;
-                    if self.input.get(self.pos..).is_some_and(|s| s.starts_with(b"-->")) {
-                        self.pos += 3;
-                    }
-                    return Some(Html5Token {
-                        kind: Html5Type::TagComment,
-                        value: body,
-                    });
+                    return self.read_comment();
                 }
                 // single '-' after '!': fall through to bogus
+            }
+
+            // <![CDATA[...]]>
+            if self.input.get(self.pos..).is_some_and(|s| s.starts_with(b"[CDATA[")) {
+                self.pos += 7;
+                return self.read_cdata();
             }
 
             // <!DOCTYPE ...>
@@ -268,51 +324,36 @@ impl<'a> Html5State<'a> {
             }
 
             // <!bogus ...>
-            let value = self.take_until_gt()?;
-            return Some(Html5Token {
-                kind: Html5Type::TagComment,
-                value,
-            });
+            return self.bogus_comment();
         }
 
-        // </name>
+        // </name> or bogus close
         if first == b'/' {
             self.advance();
-            self.skip_html_whitespace();
-            // empty </ > -> just go back to data (C); None is ok for now
             if self.current() == Some(b'>') {
                 self.advance();
+                self.state = Html5ParseState::Data;
                 return None;
             }
-            let start = self.pos;
-            while self.current().is_some_and(|b| !is_tag_name_end(b)) {
-                self.advance();
+            if self.current().is_some_and(|c| c.is_ascii_alphabetic()) {
+                self.is_close = true;
+                return self.read_tag_name();
             }
-            let name = self.slice_from(start)?;
-            self.skip_html_whitespace();
-            if self.current() == Some(b'>') {
-                self.advance();
-            }
-            return Some(Html5Token {
-                kind: Html5Type::TagClose,
-                value: name,
-            });
+            self.is_close = false;
+            return self.bogus_comment();
         }
 
         // <?..>
         if first == b'?' {
             self.advance();
-            let value = self.take_until_gt()?;
-            return Some(Html5Token {
-                kind: Html5Type::TagComment,
-                value,
-            });
+            return self.bogus_comment();
         }
 
         // <%...%>
         if first == b'%' {
             self.advance();
             let value = self.take_until_pct_gt()?;
+            self.state = Html5ParseState::Data;
             return Some(Html5Token {
                 kind: Html5Type::TagComment,
                 value,
@@ -321,15 +362,184 @@ impl<'a> Html5State<'a> {
 
         // <name ...  or  <\0name ... (IE)
         if first.is_ascii_alphabetic() || first == 0 {
-            let start = self.pos;
-            while self.current().is_some_and(|b| !is_tag_name_end(b)) {
-                self.advance();
-            }
-            self.state = Html5ParseState::InTag;
-            return self.emit(Html5Type::TagNameOpen, start);
+            return self.read_tag_name();
         }
 
-        None
+        // non-html tag opener (Go `stateTagOpen` default)
+        self.state = Html5ParseState::Data;
+        Some(Html5Token {
+            kind: Html5Type::DataText,
+            value: self.input.get(self.pos - 1..self.pos)?,
+        })
+    }
+
+    /// Go `stateTagName`.
+    fn read_tag_name(&mut self) -> Option<Html5Token<'a>> {
+        let start = self.pos;
+        while let Some(b) = self.current() {
+            match b {
+                0 => self.advance(),
+                b if is_html_whitespace(b) && b != 0 => {
+                    let name = self.slice_from(start)?;
+                    self.skip_html_whitespace();
+                    self.state = Html5ParseState::InTag;
+                    self.is_close = false;
+                    return Some(Html5Token {
+                        kind: Html5Type::TagNameOpen,
+                        value: name,
+                    });
+                },
+                b'/' if !self.is_close => {
+                    let name = self.slice_from(start)?;
+                    self.state = Html5ParseState::InTag;
+                    return Some(Html5Token {
+                        kind: Html5Type::TagNameOpen,
+                        value: name,
+                    });
+                },
+                b'>' => {
+                    let name = self.slice_from(start)?;
+                    if self.is_close {
+                        self.advance();
+                        self.state = Html5ParseState::Data;
+                        self.is_close = false;
+                        return Some(Html5Token {
+                            kind: Html5Type::TagClose,
+                            value: name,
+                        });
+                    }
+                    self.state = Html5ParseState::InTag;
+                    return Some(Html5Token {
+                        kind: Html5Type::TagNameOpen,
+                        value: name,
+                    });
+                },
+                _ => self.advance(),
+            }
+        }
+
+        let name = self.slice_from(start)?;
+        self.state = Html5ParseState::InTag;
+        self.is_close = false;
+        Some(Html5Token {
+            kind: Html5Type::TagNameOpen,
+            value: name,
+        })
+    }
+
+    /// Go `stateComment` (`-->` and `-!>` terminators).
+    fn read_comment(&mut self) -> Option<Html5Token<'a>> {
+        let start = self.pos;
+        let mut scan = self.pos;
+        while let Some(rest) = self.input.get(scan..) {
+            let Some(dash_idx) = rest.iter().position(|&b| b == b'-') else {
+                break;
+            };
+            let abs = scan + dash_idx;
+            if abs + 3 > self.input.len() {
+                break;
+            }
+            let mut offset = 1_usize;
+            while self.input.get(abs + offset) == Some(&0) {
+                offset += 1;
+            }
+            let Some(&ch) = self.input.get(abs + offset) else {
+                break;
+            };
+            if ch != b'-' && ch != b'!' {
+                scan = abs + 1;
+                continue;
+            }
+            offset += 1;
+            if self.input.get(abs + offset) != Some(&b'>') {
+                scan = abs + 1;
+                continue;
+            }
+            offset += 1;
+            let body = self.input.get(start..abs)?;
+            self.pos = abs + offset;
+            self.state = Html5ParseState::Data;
+            return Some(Html5Token {
+                kind: Html5Type::TagComment,
+                value: body,
+            });
+        }
+
+        let body = self.input.get(start..)?;
+        self.pos = self.input.len();
+        Some(Html5Token {
+            kind: Html5Type::TagComment,
+            value: body,
+        })
+    }
+
+    /// Go `stateCData`.
+    fn read_cdata(&mut self) -> Option<Html5Token<'a>> {
+        let start = self.pos;
+        let mut scan = self.pos;
+        while let Some(rest) = self.input.get(scan..) {
+            let Some(rb_idx) = rest.iter().position(|&b| b == b']') else {
+                break;
+            };
+            let abs = scan + rb_idx;
+            if self.input.get(abs..abs + 3) == Some(b"]]>") {
+                let value = self.input.get(start..abs)?;
+                self.pos = abs + 3;
+                self.state = Html5ParseState::Data;
+                return Some(Html5Token {
+                    kind: Html5Type::DataText,
+                    value,
+                });
+            }
+            scan = abs + 1;
+        }
+
+        let value = self.input.get(start..)?;
+        self.pos = self.input.len();
+        Some(Html5Token {
+            kind: Html5Type::DataText,
+            value,
+        })
+    }
+
+    /// Go `stateBogusComment`.
+    fn bogus_comment(&mut self) -> Option<Html5Token<'a>> {
+        let start = self.pos;
+        if let Some(rest) = self.input.get(self.pos..)
+            && let Some(idx) = rest.iter().position(|&b| b == b'>')
+        {
+            let body = self.input.get(start..self.pos + idx)?;
+            self.pos += idx + 1;
+            self.state = Html5ParseState::Data;
+            return Some(Html5Token {
+                kind: Html5Type::TagComment,
+                value: body,
+            });
+        }
+        let body = self.input.get(start..)?;
+        self.pos = self.input.len();
+        Some(Html5Token {
+            kind: Html5Type::TagComment,
+            value: body,
+        })
+    }
+
+    /// Go `stateBeforeAttributeName` / `stateSelfClosingStartTag` for `/`.
+    fn handle_slash_in_tag(&mut self) -> Option<Html5Token<'a>> {
+        let slash = self.pos;
+        self.advance();
+        self.skip_html_whitespace();
+        if self.current() == Some(b'>') {
+            self.advance();
+            let value = self.input.get(slash..self.pos)?;
+            self.state = Html5ParseState::Data;
+            return Some(Html5Token {
+                kind: Html5Type::TagNameSelfClose,
+                value,
+            });
+        }
+        // `<foo /junk>`: `/` not followed by `>` → attribute name
+        self.attr_name()
     }
 
     /// Deal with final tag close
@@ -337,34 +547,24 @@ impl<'a> Html5State<'a> {
         let start = self.pos;
         self.advance();
         self.state = Html5ParseState::Data;
+        self.expect_attr_equals = false;
         self.emit(Html5Type::TagNameClose, start)
-    }
-
-    /// Deal with self-closing tags
-    fn tag_close_self(&mut self) -> Option<Html5Token<'a>> {
-        self.advance();
-        self.skip_html_whitespace();
-        let next = self.current()?;
-        if next != b'>' {
-            return None;
-        }
-        let start = self.pos;
-        self.advance();
-        self.state = Html5ParseState::Data;
-        self.emit(Html5Type::TagNameSelfClose, start)
     }
 
     /// Deal with attribute names (after tag name)
     fn attr_name(&mut self) -> Option<Html5Token<'a>> {
         let start = self.pos;
+        self.advance();
         while self.current().is_some_and(|b| !is_delimiter(b)) {
             self.advance();
         }
+        self.expect_attr_equals = true;
         self.emit(Html5Type::AttrName, start)
     }
 
     /// Deal with attributes after '=' sign
     fn attr_value(&mut self) -> Option<Html5Token<'a>> {
+        self.expect_attr_equals = false;
         // We were called because current byte is '=' (from next_in_tag).
         self.advance(); // consume '='
         self.skip_html_whitespace();
@@ -448,11 +648,6 @@ impl<'a> Html5State<'a> {
             value: self.slice_from(start)?,
         })
     }
-}
-
-/// Tag/close name: continue through nulls and junk; stop on white `/` `>`.
-fn is_tag_name_end(b: u8) -> bool {
-    b == b'/' || b == b'>' || (is_html_whitespace(b) && b != 0)
 }
 
 /// HTML/libinjection whitespace: ASCII whitespace plus vertical tab.
@@ -576,7 +771,10 @@ mod tests {
         },
         Case {
             input: b"<script/>",
-            expect: &[(Html5Type::TagNameOpen, b"script"), (Html5Type::TagNameSelfClose, b">")],
+            expect: &[
+                (Html5Type::TagNameOpen, b"script"),
+                (Html5Type::TagNameSelfClose, b"/>"),
+            ],
         },
         Case {
             input: b"</script>",
@@ -584,7 +782,10 @@ mod tests {
         },
         Case {
             input: b"<script  />",
-            expect: &[(Html5Type::TagNameOpen, b"script"), (Html5Type::TagNameSelfClose, b">")],
+            expect: &[
+                (Html5Type::TagNameOpen, b"script"),
+                (Html5Type::TagNameSelfClose, b"/>"),
+            ],
         },
         Case {
             input: b"<script   >",
