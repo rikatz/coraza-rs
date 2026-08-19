@@ -1,0 +1,39 @@
+name: Coverage Check
+
+description: Install cargo-llvm-cov and enforce coverage thresholds.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Rust
+      uses: ./.github/actions/setup-rust
+      with:
+        cache-suffix: coverage
+
+    - name: Cache cargo-llvm-cov
+      id: cache-llvm-cov
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cargo-llvm-cov
+        key: cargo-llvm-cov-${{ runner.os }}
+
+    - name: Install cargo-llvm-cov
+      if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install cargo-llvm-cov --locked
+
+    - name: Cache cargo-nextest
+      id: cache-nextest
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cargo-nextest
+        key: cargo-nextest-${{ runner.os }}
+
+    - name: Install cargo-nextest
+      if: steps.cache-nextest.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install cargo-nextest --locked
+
+    - name: Run coverage gate
+      shell: bash
+      run: make coverage-check
