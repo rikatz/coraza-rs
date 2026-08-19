@@ -3,14 +3,15 @@
 # -------------------------------------------------------------------
 
 V ?=
+NIGHTLY ?= nightly
 
 ifneq ($(V),)
   _NOCAPTURE := -- --nocapture
 endif
 
-.PHONY: all build check clean test lint fmt doc setup-hooks help
+.PHONY: all build check clean test lint lint-extra audit coverage-check fmt doc setup-hooks help
 
-all: build fmt lint test
+all: build fmt lint lint-extra test audit coverage-check
 
 # -------------------------------------------------------------------
 # Build
@@ -38,11 +39,26 @@ test:
 
 lint:
 	cargo clippy --workspace --all-targets -- -D warnings
-	cargo fmt --all -- --check
+	cargo +$(NIGHTLY) fmt --all -- --check
 	cargo xtask lint-license
 
+lint-extra:
+	typos .
+	taplo format --check .
+	actionlint
+	shellcheck .hooks/*
+	npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target"
+
+audit:
+	cargo audit
+	cargo deny check
+
+coverage-check:
+	cargo llvm-cov nextest --workspace --lcov --output-path target/llvm-cov/lcov.info
+	cargo llvm-cov report --summary-only --fail-under-lines 90 --fail-under-regions 80
+
 fmt:
-	cargo fmt --all
+	cargo +$(NIGHTLY) fmt --all
 
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
@@ -62,9 +78,10 @@ setup-hooks:
 help:
 	@echo "Variables:"
 	@echo "  V=1        show test output (--nocapture)"
+	@echo "  NIGHTLY    rustup toolchain used for rustfmt (default: nightly)"
 	@echo ""
 	@echo "Top-level:"
-	@echo "  all        build + fmt + lint + test"
+	@echo "  all        build + fmt + lint + lint-extra + test + audit + coverage-check"
 	@echo ""
 	@echo "Build:"
 	@echo "  build      cargo build --workspace"
@@ -76,6 +93,9 @@ help:
 	@echo ""
 	@echo "Quality:"
 	@echo "  lint       clippy + rustfmt check + license header check"
+	@echo "  lint-extra typos + taplo + actionlint + shellcheck + markdownlint"
+	@echo "  audit      cargo audit + cargo deny"
+	@echo "  coverage-check  enforce 90% line / 80% region coverage"
 	@echo "  fmt        format with rustfmt"
 	@echo "  doc        build docs with warnings denied"
 	@echo ""
