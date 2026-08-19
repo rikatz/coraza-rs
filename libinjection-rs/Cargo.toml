@@ -23,5 +23,14 @@ alloc = []
 memchr = { version = "2", default-features = false }
 sqlparser = { version = "0.62", optional = true, default-features = false, features = ["std"] }
 
-[build-dependencies]
-# phf_codegen added when legacy tables are generated (L5)
+[[test]]
+name = "corpus_parse"
+path = "tests/corpus_parse.rs"
+required-features = ["legacy"]
+
+[[test]]
+name = "no_alloc"
+path = "tests/no_alloc.rs"
+required-features = ["legacy"]
+
+[dev-dependencies]

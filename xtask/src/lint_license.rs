@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! `cargo xtask lint-license` — enforce the Apache-2.0 copyright header on
+//! `cargo xtask lint-license` - enforce the Apache-2.0 copyright header on
 //! every tracked `.rs` file.
 
 use clap::Parser;
@@ -44,7 +44,7 @@ limitations under the License.
 "#;
 
 /// Directory names skipped while walking the workspace for `.rs` files.
-const SKIPPED_DIRS: [&str; 2] = ["target", ".git"];
+const SKIPPED_DIRS: [&str; 3] = ["target", ".git", "coraza-rs"];
 
 // -----------------------------------------------------------------------------
 // CLI Arguments
