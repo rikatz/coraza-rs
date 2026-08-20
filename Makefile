@@ -54,6 +54,7 @@ audit:
 	cargo deny check
 
 coverage-check:
+	mkdir -p target/llvm-cov
 	cargo llvm-cov nextest --workspace --lcov --output-path target/llvm-cov/lcov.info
 	cargo llvm-cov report --summary-only --fail-under-lines 90 --fail-under-regions 80
 

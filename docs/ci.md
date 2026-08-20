@@ -5,24 +5,29 @@ This repository uses GitHub Actions to block risky changes early.
 ## What CI checks
 
 ### `tests`
+
 - Lint: `make lint`
 - Tests: `make test`
 - Meta-lint: `make lint-extra`
 - Feature matrix: test and lint each feature combo with `cargo-hack`
 
 ### `supply-chain`
+
 - `cargo audit`
 - `cargo deny check`
 
 ### `coverage`
+
 - Enforces:
   - line coverage >= 90%
   - region coverage >= 80%
 
 ### `msrv`
+
 - Builds the workspace with the Rust version from `rust-toolchain.toml`
 
 ### `zizmor`
+
 - Audits GitHub Actions workflow and action security.
 
 ## Run checks locally
@@ -44,6 +49,7 @@ make all
 ## Signing requirements
 
 Each commit must be:
+
 - signed (`git commit -S`)
 - signed off (`git commit -s`)
 
