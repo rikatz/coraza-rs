@@ -1,46 +1,45 @@
-/*
-Copyright Coraza Kubernetes Operator contributors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright Coraza Kubernetes Operator contributors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! `cargo xtask lint-license` — enforce the Apache-2.0 copyright header on
 //! every tracked `.rs` file.
 
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use clap::Parser;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------------
 // Constants
 // -----------------------------------------------------------------------------
 
 /// The copyright header every `.rs` file must start with.
-const LICENSE_HEADER: &str = r#"/*
-Copyright Coraza Kubernetes Operator contributors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+const LICENSE_HEADER: &str = r#"// Copyright Coraza Kubernetes Operator contributors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 "#;
 
 /// Directory names skipped while walking the workspace for `.rs` files.
@@ -58,11 +57,15 @@ pub(crate) struct Args;
 // Entry Point
 // -----------------------------------------------------------------------------
 
-/// Check every `.rs` file under the workspace root for the required
+/// Check every `.rs` file under workspace members for the required
 /// copyright header, exiting with an error if any are missing it.
 pub(crate) fn run(_args: Args) {
     let workspace_root = workspace_root();
-    let files = find_rs_files(&workspace_root);
+    let member_dirs = workspace_member_dirs(&workspace_root);
+    let files = member_dirs
+        .iter()
+        .flat_map(|dir| find_rs_files(dir))
+        .collect::<Vec<_>>();
 
     let violations: Vec<PathBuf> = files
         .into_iter()
@@ -127,6 +130,81 @@ fn workspace_root() -> PathBuf {
         .to_owned()
 }
 
+/// Resolve workspace member directories from the root `Cargo.toml`.
+fn workspace_member_dirs(root: &Path) -> Vec<PathBuf> {
+    let cargo_toml_path = root.join("Cargo.toml");
+    let cargo_toml = match fs::read_to_string(&cargo_toml_path) {
+        Ok(content) => content,
+        Err(err) => {
+            eprintln!("failed to read {}: {err}", cargo_toml_path.display());
+            std::process::exit(1);
+        },
+    };
+
+    let Some(members) = extract_workspace_members(&cargo_toml) else {
+        eprintln!("failed to parse workspace members from {}", cargo_toml_path.display());
+        std::process::exit(1);
+    };
+
+    members.into_iter().map(|member| root.join(member)).collect()
+}
+
+/// Extract `[workspace].members` paths from a `Cargo.toml` string.
+fn extract_workspace_members(content: &str) -> Option<Vec<String>> {
+    let mut in_workspace = false;
+    let mut in_members = false;
+    let mut members = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') {
+            in_workspace = trimmed == "[workspace]";
+            in_members = false;
+            continue;
+        }
+
+        if !in_workspace {
+            continue;
+        }
+
+        if trimmed.starts_with("members") {
+            in_members = true;
+            if let Some(value) = trimmed.split('=').nth(1) {
+                members.extend(parse_member_list(value));
+            }
+            if trimmed.contains(']') {
+                in_members = false;
+            }
+            continue;
+        }
+
+        if in_members {
+            members.extend(parse_member_list(trimmed));
+            if trimmed.contains(']') {
+                in_members = false;
+            }
+        }
+    }
+
+    (!members.is_empty()).then_some(members)
+}
+
+/// Parse a `Cargo.toml` list fragment such as `["xtask",` or `"libinjection-rs"]`.
+fn parse_member_list(fragment: &str) -> Vec<String> {
+    fragment
+        .split('"')
+        .filter_map(|part| {
+            let member = part.trim();
+            if member.is_empty() || member == "[" || member == "]" || member == "," {
+                None
+            } else {
+                Some(member.to_owned())
+            }
+        })
+        .collect()
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -134,8 +212,9 @@ fn workspace_root() -> PathBuf {
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     #[test]
     fn file_with_header_passes() {
@@ -163,6 +242,21 @@ mod tests {
         fs::create_dir(&target_dir).unwrap();
         fs::write(target_dir.join("generated.rs"), "fn main() {}\n").unwrap();
         assert!(find_rs_files(&dir).is_empty());
+    }
+
+    #[test]
+    fn extract_workspace_members_parses_multiline_array() {
+        let cargo_toml = r#"
+[workspace]
+members = [
+    "libinjection-rs",
+    "xtask",
+]
+"#;
+        assert_eq!(
+            extract_workspace_members(cargo_toml),
+            Some(vec!["libinjection-rs".to_owned(), "xtask".to_owned(),])
+        );
     }
 
     fn tempfile_dir() -> PathBuf {
