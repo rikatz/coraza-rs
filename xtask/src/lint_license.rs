@@ -16,11 +16,13 @@
 //! every tracked `.rs` file.
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
 
 use clap::Parser;
+use glob::glob;
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -62,6 +64,13 @@ pub(crate) struct Args;
 enum LintLicenseError {
     /// One or more `.rs` files are missing the required header.
     Violations(Vec<PathBuf>),
+    /// A workspace `.rs` file could not be read.
+    ReadFile {
+        /// File that could not be read.
+        path: PathBuf,
+        /// Human-readable failure message for stderr.
+        message: String,
+    },
     /// The workspace manifest could not be read or parsed.
     Workspace {
         /// Human-readable failure message for stderr.
@@ -95,6 +104,10 @@ fn execute_lint(root: &Path) -> Result<(), LintLicenseError> {
             }
             Err(LintLicenseError::Violations(violations))
         },
+        Err(LintLicenseError::ReadFile { path, message }) => {
+            eprintln!("failed to read {}: {message}", path.display());
+            Err(LintLicenseError::ReadFile { path, message })
+        },
         Err(LintLicenseError::Workspace { message }) => {
             eprintln!("{message}");
             Err(LintLicenseError::Workspace { message })
@@ -117,13 +130,17 @@ fn collect_violations(root: &Path) -> Result<Vec<PathBuf>, LintLicenseError> {
     let member_dirs = workspace_member_dirs(root)?;
     let files = member_dirs
         .iter()
-        .flat_map(|dir| find_rs_files(dir))
+        .map(|dir| find_rs_files(dir))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
 
     let mut violations = Vec::new();
     for path in files {
-        let content = fs::read_to_string(&path).map_err(|err| LintLicenseError::Workspace {
-            message: format!("failed to read {}: {err}", path.display()),
+        let content = fs::read_to_string(&path).map_err(|err| LintLicenseError::ReadFile {
+            path: path.clone(),
+            message: err.to_string(),
         })?;
         if !content.starts_with(LICENSE_HEADER) {
             violations.push(path);
@@ -139,33 +156,68 @@ fn collect_violations(root: &Path) -> Result<Vec<PathBuf>, LintLicenseError> {
 
 /// Recursively collect every `.rs` file under `root`, skipping
 /// [`SKIPPED_DIRS`] and other hidden directories.
-fn find_rs_files(root: &Path) -> Vec<PathBuf> {
+fn find_rs_files(root: &Path) -> Result<Vec<PathBuf>, LintLicenseError> {
+    let canonical_root = fs::canonicalize(root).map_err(|err| LintLicenseError::Workspace {
+        message: format!("failed to canonicalize directory {}: {err}", root.display()),
+    })?;
     let mut files = Vec::new();
-    walk(root, &mut files);
-    files
+    let mut visited = HashSet::from([canonical_root.clone()]);
+    walk(root, &canonical_root, &mut visited, &mut files)?;
+    Ok(files)
 }
 
 /// Walk `dir` recursively, appending `.rs` files found to `files`.
-fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
+fn walk(
+    dir: &Path,
+    canonical_root: &Path,
+    visited: &mut HashSet<PathBuf>,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), LintLicenseError> {
+    let entries = fs::read_dir(dir).map_err(|err| LintLicenseError::Workspace {
+        message: format!("failed to read directory {}: {err}", dir.display()),
+    })?;
 
-    for entry in entries.filter_map(Result::ok) {
+    for entry in entries {
+        let entry = entry.map_err(|err| LintLicenseError::Workspace {
+            message: format!("failed to read directory entry in {}: {err}", dir.display()),
+        })?;
         let path = entry.path();
+        let file_type = entry.file_type().map_err(|err| LintLicenseError::Workspace {
+            message: format!("failed to inspect workspace entry {}: {err}", path.display()),
+        })?;
 
-        if path.is_dir() {
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if SKIPPED_DIRS.contains(&name) || name.starts_with('.') {
-                continue;
+        if file_type.is_dir()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| SKIPPED_DIRS.contains(&name) || name.starts_with('.'))
+        {
+            continue;
+        }
+
+        let canonical_path = fs::canonicalize(&path).map_err(|err| LintLicenseError::Workspace {
+            message: format!("failed to canonicalize workspace entry {}: {err}", path.display()),
+        })?;
+        if !canonical_path.starts_with(canonical_root) {
+            return Err(LintLicenseError::Workspace {
+                message: format!(
+                    "workspace entry {} resolves outside workspace root {}",
+                    path.display(),
+                    canonical_root.display()
+                ),
+            });
+        }
+
+        if canonical_path.is_dir() {
+            if visited.insert(canonical_path.clone()) {
+                walk(&canonical_path, canonical_root, visited, files)?;
             }
-            walk(&path, files);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
+        } else if canonical_path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(canonical_path);
         }
     }
+
+    Ok(())
 }
 
 /// Locate the workspace root directory.
@@ -205,24 +257,42 @@ fn workspace_member_dirs(root: &Path) -> Result<Vec<PathBuf>, LintLicenseError> 
             });
         }
 
-        let member_path = canonical_root.join(&member);
-        let canonical_member = fs::canonicalize(&member_path).map_err(|err| LintLicenseError::Workspace {
-            message: format!(
-                "failed to canonicalize workspace member {}: {err}",
-                member_path.display()
-            ),
+        let member_pattern = canonical_root.join(&member);
+        let member_pattern = member_pattern.to_string_lossy();
+        let matches = glob(&member_pattern).map_err(|err| LintLicenseError::Workspace {
+            message: format!("failed to expand workspace member {member:?}: {err}"),
         })?;
 
-        if !canonical_member.starts_with(&canonical_root) {
-            return Err(LintLicenseError::Workspace {
+        let mut matched_member = false;
+        for matched in matches {
+            matched_member = true;
+            let member_path = matched.map_err(|err| LintLicenseError::Workspace {
+                message: format!("failed to expand workspace member {member:?}: {err}"),
+            })?;
+            let canonical_member = fs::canonicalize(&member_path).map_err(|err| LintLicenseError::Workspace {
                 message: format!(
-                    "workspace member {member:?} resolves outside workspace root {}",
-                    canonical_root.display()
+                    "failed to canonicalize workspace member {}: {err}",
+                    member_path.display()
                 ),
-            });
+            })?;
+
+            if !canonical_member.starts_with(&canonical_root) {
+                return Err(LintLicenseError::Workspace {
+                    message: format!(
+                        "workspace member {member:?} resolves outside workspace root {}",
+                        canonical_root.display()
+                    ),
+                });
+            }
+
+            member_dirs.push(canonical_member);
         }
 
-        member_dirs.push(canonical_member);
+        if !matched_member {
+            return Err(LintLicenseError::Workspace {
+                message: format!("failed to canonicalize workspace member {member_pattern}: path does not exist"),
+            });
+        }
     }
 
     Ok(member_dirs)
@@ -239,58 +309,11 @@ fn is_safe_workspace_member(member: &str) -> bool {
 
 /// Extract `[workspace].members` paths from a `Cargo.toml` string.
 fn extract_workspace_members(content: &str) -> Option<Vec<String>> {
-    let mut in_workspace = false;
-    let mut in_members = false;
-    let mut members = Vec::new();
+    let document = content.parse::<toml::Value>().ok()?;
+    let members = document.get("workspace")?.get("members")?.as_array()?;
+    let members = members.iter().map(toml::Value::as_str).collect::<Option<Vec<_>>>()?;
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with('[') {
-            in_workspace = trimmed == "[workspace]";
-            in_members = false;
-            continue;
-        }
-
-        if !in_workspace {
-            continue;
-        }
-
-        if trimmed.starts_with("members") {
-            in_members = true;
-            if let Some(value) = trimmed.split('=').nth(1) {
-                members.extend(parse_member_list(value));
-            }
-            if trimmed.contains(']') {
-                in_members = false;
-            }
-            continue;
-        }
-
-        if in_members {
-            members.extend(parse_member_list(trimmed));
-            if trimmed.contains(']') {
-                in_members = false;
-            }
-        }
-    }
-
-    (!members.is_empty()).then_some(members)
-}
-
-/// Parse a `Cargo.toml` list fragment such as `["xtask",` or `"libinjection-rs"]`.
-fn parse_member_list(fragment: &str) -> Vec<String> {
-    fragment
-        .split('"')
-        .filter_map(|part| {
-            let member = part.trim();
-            if member.is_empty() || member == "[" || member == "]" || member == "," {
-                None
-            } else {
-                Some(member.to_owned())
-            }
-        })
-        .collect()
+    (!members.is_empty()).then_some(members.into_iter().map(str::to_owned).collect())
 }
 
 // -----------------------------------------------------------------------------
@@ -400,20 +423,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn collect_violations_errors_on_unreadable_file() {
-        use std::os::unix::fs::PermissionsExt as _;
+    fn collect_violations_rejects_nested_symlinks_outside_workspace() {
+        use std::os::unix::fs::symlink;
 
         let root = write_temp_workspace(&["crate-a"], &[("crate-a/src/lib.rs", LICENSE_HEADER)]);
-        let path = root.join("crate-a/src/lib.rs");
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o000);
-        fs::set_permissions(&path, perms).unwrap();
+        let outside = tempfile_dir();
+        fs::write(outside.join("escape.rs"), LICENSE_HEADER).unwrap();
+        symlink(&outside, root.join("crate-a/escape")).unwrap();
 
         let err = collect_violations(&root).unwrap_err();
         assert!(matches!(
             err,
-            LintLicenseError::Workspace { message } if message.starts_with("failed to read")
+            LintLicenseError::Workspace { message }
+                if message.contains("workspace entry") && message.contains("outside workspace root")
         ));
+    }
+
+    #[test]
+    fn collect_violations_errors_on_invalid_utf8_file() {
+        let root = write_temp_workspace(&["crate-a"], &[("crate-a/src/lib.rs", LICENSE_HEADER)]);
+        let path = root.join("crate-a/src/lib.rs");
+        fs::write(&path, [0xFF]).unwrap();
+
+        let err = collect_violations(&root).unwrap_err();
+        assert!(matches!(err, LintLicenseError::ReadFile { .. }));
     }
 
     #[test]
@@ -433,7 +466,7 @@ mod tests {
     #[test]
     fn walk_returns_empty_for_missing_directory() {
         let dir = tempfile_dir().join("missing");
-        assert!(find_rs_files(&dir).is_empty());
+        assert!(matches!(find_rs_files(&dir), Err(LintLicenseError::Workspace { .. })));
     }
 
     #[test]
@@ -483,6 +516,7 @@ mod tests {
         fs::write(dir.join("good.rs"), format!("{LICENSE_HEADER}\nfn main() {{}}\n")).unwrap();
         assert!(
             find_rs_files(&dir)
+                .unwrap()
                 .iter()
                 .all(|f| fs::read_to_string(f).unwrap().starts_with(LICENSE_HEADER))
         );
@@ -502,7 +536,7 @@ mod tests {
         let target_dir = dir.join("target");
         fs::create_dir(&target_dir).unwrap();
         fs::write(target_dir.join("generated.rs"), "fn main() {}\n").unwrap();
-        assert!(find_rs_files(&dir).is_empty());
+        assert!(find_rs_files(&dir).unwrap().is_empty());
     }
 
     #[test]
@@ -511,7 +545,21 @@ mod tests {
         let nested = dir.join("src/nested");
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("mod.rs"), "fn nested() {}\n").unwrap();
-        assert_eq!(find_rs_files(&dir), vec![nested.join("mod.rs")]);
+        assert_eq!(find_rs_files(&dir).unwrap(), vec![nested.join("mod.rs")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_skips_directory_symlinks_to_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile_dir();
+        let nested = dir.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("mod.rs"), "fn nested() {}\n").unwrap();
+        symlink(&nested, nested.join("ancestor")).unwrap();
+
+        assert_eq!(find_rs_files(&dir).unwrap(), vec![nested.join("mod.rs")]);
     }
 
     #[test]
@@ -520,14 +568,14 @@ mod tests {
         let hidden = dir.join(".hidden");
         fs::create_dir(&hidden).unwrap();
         fs::write(hidden.join("secret.rs"), "fn secret() {}\n").unwrap();
-        assert!(find_rs_files(&dir).is_empty());
+        assert!(find_rs_files(&dir).unwrap().is_empty());
     }
 
     #[test]
     fn walk_ignores_non_rs_files() {
         let dir = tempfile_dir();
         fs::write(dir.join("notes.txt"), "not rust\n").unwrap();
-        assert!(find_rs_files(&dir).is_empty());
+        assert!(find_rs_files(&dir).unwrap().is_empty());
     }
 
     #[test]
@@ -547,7 +595,7 @@ members = [
 
     #[test]
     fn extract_workspace_members_parses_inline_array() {
-        let cargo_toml = "[workspace]\nmembers = [\"crate-a\", \"crate-b\"]\n";
+        let cargo_toml = "[workspace]\nmembers = [\"crate-a\", \"crate-b\"] # comment\n";
         assert_eq!(
             extract_workspace_members(cargo_toml),
             Some(vec!["crate-a".to_owned(), "crate-b".to_owned()])
@@ -555,8 +603,16 @@ members = [
     }
 
     #[test]
-    fn parse_member_list_ignores_brackets_and_commas() {
-        assert_eq!(parse_member_list(r#"["crate-a","#), vec!["crate-a".to_owned()]);
+    fn workspace_member_dirs_expands_member_globs() {
+        let root = tempfile_dir();
+        fs::create_dir_all(root.join("crates/crate-a")).unwrap();
+        fs::create_dir_all(root.join("crates/crate-b")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/*\"]\n").unwrap();
+
+        let members = workspace_member_dirs(&root).unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().any(|path| path.ends_with("crate-a")));
+        assert!(members.iter().any(|path| path.ends_with("crate-b")));
     }
 
     fn write_temp_workspace(members: &[&str], files: &[(&str, &str)]) -> PathBuf {

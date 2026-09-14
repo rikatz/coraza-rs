@@ -14,6 +14,8 @@ repository = "https://github.com/networking-incubator/coraza-rs"
 
 [workspace.dependencies]
 clap = { version = "4.6.2", features = ["derive"] }
+glob = "=0.3.4"
+toml = "=0.8.23"
 
 [workspace.lints.rust]
 dead_code = "deny"
