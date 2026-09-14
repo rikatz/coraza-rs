@@ -13,3 +13,5 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+glob = { workspace = true }
+toml = { workspace = true }
