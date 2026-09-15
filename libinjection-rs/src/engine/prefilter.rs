@@ -40,6 +40,8 @@ pub(crate) fn sqli_may_be_interesting(input: &[u8]) -> bool {
         || find_ignore_ascii_case(input, b" or ").is_some()
         || find_ignore_ascii_case(input, b" and ").is_some()
         || find_ignore_ascii_case(input, b"exec").is_some()
+        || find_ignore_ascii_case(input, b"xp_cmdshell").is_some()
+        || find_ignore_ascii_case(input, b"waitfor delay").is_some()
         || find_ignore_ascii_case(input, b"dual").is_some()
         || find_ignore_ascii_case(input, b"q'").is_some()
 }

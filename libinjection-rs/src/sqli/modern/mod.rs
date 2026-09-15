@@ -97,6 +97,18 @@ mod tests {
     }
 
     #[test]
+    fn function_triggers_are_not_filtered_out() {
+        for input in [b"xp_cmdshell".as_slice(), b"WAITFOR DELAY".as_slice()] {
+            let snap = analyze(input, AnalyzeOptions::default());
+            assert!(!snap.flags.contains(AnalysisFlags::PREFILTER_MISS), "input={input:?}");
+            assert!(
+                snap.constructs
+                    .intersects(ConstructFlags(ConstructFlags::SQL_FUNCTION_CALL))
+            );
+        }
+    }
+
+    #[test]
     fn hardening_cases_keep_lexical_and_dialect_boundaries() {
         struct Case {
             input: &'static [u8],
@@ -147,6 +159,11 @@ mod tests {
             },
             Case {
                 input: b"duality",
+                flag: 0,
+                detected: false,
+            },
+            Case {
+                input: b"account_union_status",
                 flag: 0,
                 detected: false,
             },

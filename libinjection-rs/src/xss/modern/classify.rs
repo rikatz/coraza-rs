@@ -59,7 +59,7 @@ pub(crate) fn classify(norm: NormView<'_>, html_context: XssHtmlContext) -> XssC
     detect_expression(orig, norm_bytes, &mut out);
     detect_comment_bypass(orig, html_context, &mut out);
     detect_doctype(orig, norm_bytes, html_context, &mut out);
-    if legacy::detect(orig) && !out.constructs.any_xss() {
+    if !out.constructs.any_xss() && legacy::detect(orig) {
         out.constructs.0 |= ConstructFlags::XSS_HTML_DENYLIST;
     }
     out

@@ -166,11 +166,17 @@ fn html_entity_starts_with(input: &[u8], expected: &[u8]) -> bool {
         pos += 1;
     }
     for &want in expected {
-        let Some(got) = next_html_byte(input, &mut pos) else {
-            return false;
-        };
-        if !got.eq_ignore_ascii_case(&want) {
-            return false;
+        loop {
+            let Some(got) = next_html_byte(input, &mut pos) else {
+                return false;
+            };
+            if got == 0 || got == b'\n' {
+                continue;
+            }
+            if !got.eq_ignore_ascii_case(&want) {
+                return false;
+            }
+            break;
         }
     }
     true
@@ -259,5 +265,11 @@ mod tests {
 
         let mut pos = 0;
         assert_eq!(next_html_byte(b"&#x100100;", &mut pos), None);
+    }
+
+    #[test]
+    fn deny_urls_ignore_embedded_nulls() {
+        assert!(is_deny_url(b"j\0avascript:"));
+        assert!(is_deny_url(b"j&#0;avascript:"));
     }
 }

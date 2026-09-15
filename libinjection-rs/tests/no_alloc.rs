@@ -30,20 +30,19 @@ use std::{
 
 use libinjection::{AnalyzeOptions, analyze_sqli, analyze_xss, detect_sqli, detect_sqli_with, detect_xss};
 
-static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static ALLOCATION_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAlloc;
 
 // SAFETY: delegates allocation accounting to the system allocator.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATED.fetch_add(layout.size(), Ordering::SeqCst);
+        ALLOCATION_CALLS.fetch_add(1, Ordering::SeqCst);
         // SAFETY: forwards to the platform default allocator.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        ALLOCATED.fetch_sub(layout.size(), Ordering::SeqCst);
         // SAFETY: forwards to the platform default allocator.
         unsafe { System.dealloc(ptr, layout) }
     }
@@ -53,10 +52,10 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static GLOBAL: CountingAlloc = CountingAlloc;
 
 fn assert_no_alloc<F: FnOnce()>(f: F) {
-    let before = ALLOCATED.load(Ordering::SeqCst);
+    let before = ALLOCATION_CALLS.load(Ordering::SeqCst);
     f();
     assert_eq!(
-        ALLOCATED.load(Ordering::SeqCst),
+        ALLOCATION_CALLS.load(Ordering::SeqCst),
         before,
         "unexpected heap allocation on hot path"
     );

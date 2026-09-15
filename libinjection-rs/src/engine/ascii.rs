@@ -14,10 +14,10 @@
 
 //! ASCII helpers for stage-1 pattern scans (zero heap).
 
-/// True if `b` is an ASCII letter or digit.
+/// True if `b` is an ASCII word/identifier character.
 #[must_use]
 pub(crate) const fn is_alnum(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// True if `b` is an ASCII letter.
