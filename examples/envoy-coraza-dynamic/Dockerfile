@@ -1,6 +1,6 @@
 FROM envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de
 
-ARG DYNAMIC_MODULE_SOURCE=target/envoy-coraza-dynamic-probe.so
+ARG DYNAMIC_MODULE_SOURCE=target/release/libenvoy_coraza_dynamic.so
 
 ENV ENVOY_DYNAMIC_MODULES_SEARCH_PATH=/opt/envoy/modules
 

@@ -388,8 +388,8 @@ name = "envoy-coraza-dynamic"
 version = "0.1.0"
 dependencies = [
  "coraza",
+ "envoy-coraza-common",
  "envoy-proxy-dynamic-modules-rust-sdk",
- "serde_json",
 ]
 
 [[package]]

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Native Envoy dynamic-module feasibility probe for the `coraza` engine.
+//! Native Envoy dynamic-module request enforcement for the `coraza` engine.
 
 /// SDK ABI entry point and filter-configuration factory.
 mod abi;
-/// Internal lifecycle probe used only for the Stage A host feasibility check.
-mod probe;
+/// Request-side policy selection, body gating and enforcement.
+mod stream;
 #[cfg(test)]
 /// Minimal logging imports needed by the native unit-test linker.
 mod test_hostcalls;

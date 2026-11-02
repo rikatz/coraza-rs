@@ -7,12 +7,12 @@ services:
       - "3000"
 
   envoy:
-    image: envoy-coraza-dynamic-stage-a:local
+    image: envoy-coraza-dynamic-stage-c:local
     build:
       context: ../..
       dockerfile: examples/envoy-coraza-dynamic/Dockerfile
       args:
-        DYNAMIC_MODULE_SOURCE: ${ENVOY_CORAZA_DYNAMIC_MODULE:-target/envoy-coraza-dynamic-probe.so}
+        DYNAMIC_MODULE_SOURCE: ${ENVOY_CORAZA_DYNAMIC_MODULE:-target/release/libenvoy_coraza_dynamic.so}
     command:
       - -c
       - /etc/envoy/envoy.yaml

@@ -19,6 +19,9 @@ static_resources:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                 stat_prefix: coraza_dynamic_ingress
                 codec_type: AUTO
+                upgrade_configs:
+                  - upgrade_type: websocket
+                    enabled: true
                 proxy_100_continue: false
                 http_protocol_options:
                   enable_trailers: true
@@ -26,7 +29,7 @@ static_resources:
                 route_config:
                   name: local_routes
                   virtual_hosts:
-                    - name: probe_service
+                    - name: coraza_service
                       domains: ["*"]
                       routes:
                         - match:
@@ -46,7 +49,7 @@ static_resources:
                       filter_name: coraza
                       filter_config:
                         "@type": type.googleapis.com/google.protobuf.StringValue
-                        value: '{"probe":"stage-a"}'
+                        value: '{}'
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

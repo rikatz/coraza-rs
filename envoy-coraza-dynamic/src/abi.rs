@@ -14,56 +14,113 @@
 
 //! Native dynamic-module ABI and HTTP filter factory.
 
+use std::sync::Arc;
+
+use coraza::{
+    audit_log::{AuditLog, MatchedRule},
+    types::AuditLogFormat,
+};
+use envoy_coraza_common::{
+    config::{Config, MAX_CONFIGURATION_BYTES},
+    observability::{bounded, sanitize_audit, Diagnostics, MAX_AUDIT_LOG_BYTES, MAX_ERROR_LOG_BYTES},
+    policy::Generation,
+};
 use envoy_proxy_dynamic_modules_rust_sdk::{
     declare_init_functions, EnvoyHttpFilter, EnvoyHttpFilterConfig, HttpFilterConfig,
 };
 
-use crate::probe::{validate_config, ProbeConfig};
+use crate::stream::FilterConfig;
 
 declare_init_functions!(init, new_http_filter_config_fn);
 
-/// Reports successful process initialization; the probe has no process-global state.
+/// Reports successful process initialization; policy state belongs to configurations.
 fn init() -> bool {
     true
 }
 
-/// Accepts only the `coraza` probe name and a UTF-8 JSON object.
+/// Parses and compiles the full policy generation before publishing native state.
 fn new_http_filter_config_fn<EC: EnvoyHttpFilterConfig, EHF: EnvoyHttpFilter>(
     _envoy_filter_config: &mut EC,
     filter_name: &str,
     config_bytes: &[u8],
 ) -> Option<Box<dyn HttpFilterConfig<EHF>>> {
-    if !valid_factory_input(filter_name, config_bytes) {
-        return None;
-    }
-    Some(Box::new(ProbeConfig))
+    compile_config(filter_name, config_bytes).map(|config| {
+        let boxed: Box<dyn HttpFilterConfig<EHF>> = Box::new(config);
+        boxed
+    })
 }
 
-/// Checks the narrow Stage A filter-name and configuration contract.
-fn valid_factory_input(filter_name: &str, config_bytes: &[u8]) -> bool {
-    // Stage C will replace this probe-only JSON-object check with the shared policy parser.
-    filter_name == "coraza" && validate_config(config_bytes).is_ok()
+/// Validates, compiles and packages one native filter configuration.
+fn compile_config(filter_name: &str, config_bytes: &[u8]) -> Option<FilterConfig> {
+    if filter_name != "coraza" {
+        envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!("envoy-coraza-dynamic: unknown filter name");
+        return None;
+    }
+    if config_bytes.len() > MAX_CONFIGURATION_BYTES {
+        envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!(
+            "envoy-coraza-dynamic: configuration exceeds the {MAX_CONFIGURATION_BYTES}-byte limit"
+        );
+        return None;
+    }
+    let config = match Config::parse(config_bytes) {
+        Ok(config) => config,
+        Err(error) => {
+            envoy_proxy_dynamic_modules_rust_sdk::envoy_log_error!("envoy-coraza-dynamic: {error}");
+            return None;
+        },
+    };
+    let diagnostics = Arc::new(Diagnostics::default());
+    let generation = match Generation::compile(
+        config,
+        Arc::clone(&diagnostics),
+        |matched: &MatchedRule| {
+            let message = bounded(&matched.error_log(), MAX_ERROR_LOG_BYTES);
+            envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!("{message}");
+        },
+        |entry: &AuditLog, format: AuditLogFormat| {
+            let (formatted, truncated) = entry.format_bounded(format, MAX_AUDIT_LOG_BYTES);
+            if !formatted.is_empty() {
+                let message = sanitize_audit(&formatted, MAX_AUDIT_LOG_BYTES, truncated);
+                envoy_proxy_dynamic_modules_rust_sdk::envoy_log_critical!("{message}");
+            }
+        },
+    ) {
+        Ok(generation) => generation,
+        Err(error) => {
+            envoy_proxy_dynamic_modules_rust_sdk::envoy_log_error!("envoy-coraza-dynamic: {error}");
+            return None;
+        },
+    };
+    for warning in generation.warnings() {
+        envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!("{warning}");
+    }
+    Some(FilterConfig::new(Arc::new(generation)))
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "Configuration tests use fixed valid fixtures.")]
 mod tests {
+    use envoy_coraza_common::config::MAX_CONFIGURATION_BYTES;
     use envoy_proxy_dynamic_modules_rust_sdk::{HttpFilterConfig as _, MockEnvoyHttpFilter};
 
-    use super::valid_factory_input;
-    use crate::probe::ProbeConfig;
+    use super::compile_config;
 
     #[test]
-    fn factory_input_rejects_unknown_names_and_invalid_bytes() {
-        assert!(!valid_factory_input("unknown", b"{}"));
-        assert!(!valid_factory_input("coraza", b"\xff"));
-        assert!(!valid_factory_input("coraza", b"[]"));
-        assert!(valid_factory_input("coraza", b"{}"));
+    fn factory_rejects_unknown_name_invalid_json_and_oversize_config() {
+        assert!(compile_config("unknown", b"{}").is_none());
+        assert!(compile_config("coraza", b"not-json").is_none());
+        assert!(compile_config("coraza", &[b' '; MAX_CONFIGURATION_BYTES + 1]).is_none());
+        let config = compile_config("coraza", b"{}").unwrap();
+        let mut host = MockEnvoyHttpFilter::default();
+        let _filter = config.new_http_filter(&mut host);
     }
 
     #[test]
-    fn filter_config_creates_against_the_sdk_mock_host() {
-        let config = ProbeConfig;
-        let mut envoy = MockEnvoyHttpFilter::default();
-        let _filter = config.new_http_filter(&mut envoy);
+    fn generation_compilation_errors_reject_the_configuration() {
+        assert!(compile_config(
+            "coraza",
+            br#"{"directives_map":{"p":["SecNotADirective x"]},"default_directives":"p"}"#,
+        )
+        .is_none());
     }
 }

@@ -17,12 +17,18 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 script_dir="$repo_root/examples/envoy-coraza-dynamic"
-compose=(docker compose -f "$script_dir/compose.yaml" -p envoy-coraza-dynamic-stage-a)
+compose=(docker compose -f "$script_dir/compose.yaml" -p envoy-coraza-dynamic-stage-c)
 target_dir=${CARGO_TARGET_DIR:-"$repo_root/target"}
 if [[ $target_dir != /* ]]; then
     target_dir="$repo_root/$target_dir"
 fi
+panic_target_dir="$target_dir/stage-c-panic-$$_$RANDOM"
+module_name="envoy-coraza-dynamic-stage-c-$$_$RANDOM.so"
+panic_module_name="envoy-coraza-dynamic-stage-c-panic-$$_$RANDOM.so"
+module_file="$repo_root/target/$module_name"
+panic_module_file="$repo_root/target/$panic_module_name"
 temp_dir=$(mktemp -d)
+
 cleanup() {
     local exit_code=$?
     trap - EXIT
@@ -30,8 +36,8 @@ cleanup() {
         "${compose[@]}" logs --no-color envoy backend 2>&1 | tail --lines=80 >&2 || true
     fi
     "${compose[@]}" down --rmi local --volumes >/dev/null 2>&1 || true
-    rm -f "$target_dir/envoy-coraza-dynamic-probe.so"
-    rm -rf "$temp_dir"
+    rm -f "$module_file" "$panic_module_file"
+    rm -rf "$panic_target_dir" "$temp_dir"
     exit "$exit_code"
 }
 trap cleanup EXIT
@@ -41,8 +47,12 @@ fail() {
     exit 1
 }
 
-command -v python3 >/dev/null 2>&1 || fail 'python3 is required for controlled HTTP/1.1 frames'
+command -v python3 >/dev/null 2>&1 || fail 'python3 is required for controlled HTTP/1.1 framing'
 command -v curl >/dev/null 2>&1 || fail 'curl is required'
+command -v docker >/dev/null 2>&1 || fail 'docker is required'
+if ss -ltn 2>/dev/null | grep --quiet ':9901'; then
+    fail 'port 9901 is already occupied; stop only the harness that owns it, then retry'
+fi
 
 request() {
     local output=$1
@@ -57,18 +67,6 @@ backend_count() {
 
 envoy_logs() {
     "${compose[@]}" logs --no-color --no-log-prefix envoy 2>/dev/null || true
-}
-
-require_log() {
-    local expected=$1
-    for _attempt in {1..30}; do
-        if envoy_logs | grep --quiet --fixed-strings "$expected"; then
-            return
-        fi
-        sleep 0.1
-    done
-    envoy_logs >"$temp_dir/envoy.log"
-    fail "Envoy logs did not contain: $expected"
 }
 
 check_status() {
@@ -88,42 +86,65 @@ wait_ready() {
     fail 'Envoy did not become ready with the native filter installed'
 }
 
-write_config_variant() {
-    local variant=$1
+write_bootstrap() {
+    local first_config=$1
     local output=$2
-    python3 - "$script_dir/envoy.yaml" "$variant" "$output" <<'PY'
+    local second_config=${3:-}
+    python3 - "$script_dir/envoy.yaml" "$first_config" "$output" "$second_config" <<'PY'
+import json
 import pathlib
 import sys
 
-source, variant, output = sys.argv[1:]
+source, first, output, second = sys.argv[1:]
 text = pathlib.Path(source).read_text()
-if variant == "unknown-name":
-    text = text.replace("filter_name: coraza\n", "filter_name: unknown\n", 1)
-elif variant == "malformed-json":
-    text = text.replace("value: '{\"probe\":\"stage-a\"}'", "value: 'not-json'", 1)
-elif variant == "malformed-utf8":
-    text = text.replace(
-        'type.googleapis.com/google.protobuf.StringValue',
-        'type.googleapis.com/google.protobuf.BytesValue',
-        1,
+
+def filter_block(config):
+    indent = " " * 18
+    return (
+        indent + "- name: envoy.filters.http.dynamic_modules\n"
+        + indent + "  typed_config:\n"
+        + indent + '    "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter\n'
+        + indent + "    dynamic_module_config:\n"
+        + indent + "      name: envoy_coraza_dynamic\n"
+        + indent + "      do_not_close: true\n"
+        + indent + "      load_globally: false\n"
+        + indent + "    filter_name: coraza\n"
+        + indent + "    filter_config:\n"
+        + indent + '      "@type": type.googleapis.com/google.protobuf.StringValue\n'
+        + indent + "      value: |\n"
+        + "".join(indent + "        " + line + "\n" for line in config.splitlines())
     )
-    text = text.replace("value: '{\"probe\":\"stage-a\"}'", 'value: "/w=="', 1)
+
+first_line = "                        value: '{}'"
+if first == "__INVALID_UTF8__":
+    text = text.replace(
+        "type.googleapis.com/google.protobuf.StringValue",
+        "type.googleapis.com/google.protobuf.BytesValue",
+        1,
+    ).replace(first_line, '                        value: "/w=="', 1)
 else:
-    raise ValueError(f"unknown config variant: {variant}")
+    scalar = "                        value: |\n"
+    scalar += "".join("                          " + line + "\n" for line in first.splitlines())
+    text = text.replace(first_line, scalar, 1)
+
+if second:
+    router = "                  - name: envoy.filters.http.router"
+    text = text.replace(router, filter_block(second) + router, 1)
 pathlib.Path(output).write_text(text)
 PY
+}
+
+start_envoy() {
+    local config=$1
+    "${compose[@]}" down --volumes >/dev/null 2>&1 || true
+    ENVOY_CORAZA_DYNAMIC_CONFIG="$config" "${compose[@]}" up --detach
+    wait_ready
 }
 
 expect_startup_rejection() {
     local label=$1
     local config=$2
-    local module_dir=${3:-}
-    local arguments=(run --rm --no-deps --service-ports)
-    if [[ -n $module_dir ]]; then
-        arguments+=(--volume "$module_dir:/opt/envoy/modules:ro")
-    fi
-    arguments+=(envoy)
-    if env ENVOY_CORAZA_DYNAMIC_CONFIG="$config" "${compose[@]}" "${arguments[@]}" \
+    if ENVOY_CORAZA_DYNAMIC_CONFIG="$config" "${compose[@]}" run --rm --no-deps --service-ports envoy \
         >"$temp_dir/$label.log" 2>&1; then
         fail "$label unexpectedly started Envoy"
     fi
@@ -134,234 +155,215 @@ expect_startup_rejection() {
     printf 'negative-control %s: startup rejected; listener did not serve traffic\n' "$label"
 }
 
+phase_policy='{"directives_map":{"main":["SecRuleEngine On","SecRequestBodyAccess On","SecRequestBodyLimit 16777216","SecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:2,phase:1,deny,status:451\"","SecRule REQUEST_BODY \"@contains body-attack\" \"id:3,phase:2,deny,status:429\"","SecRule REQUEST_URI \"@contains redirect-deny\" \"id:4,phase:1,redirect:https://example.test/blocked,status:307\"","SecRule REQUEST_URI \"@contains no-content\" \"id:5,phase:1,deny,status:204\"","SecRule REQUEST_URI \"@contains not-modified\" \"id:6,phase:1,deny,status:304\""]},"default_directives":"main"}'
+write_bootstrap "$phase_policy" "$temp_dir/phase-policy.yaml"
+
 cargo build --locked --release -p envoy-coraza-dynamic
-cargo build --locked --release -p envoy-coraza-dynamic --features panic-probe \
-    --target-dir "$target_dir/panic-probe"
-cp "$target_dir/release/libenvoy_coraza_dynamic.so" \
-    "$target_dir/envoy-coraza-dynamic-probe.so"
-export ENVOY_CORAZA_DYNAMIC_MODULE=target/envoy-coraza-dynamic-probe.so
-
+cp "$target_dir/release/libenvoy_coraza_dynamic.so" "$module_file"
+export ENVOY_CORAZA_DYNAMIC_MODULE="target/$module_name"
 "${compose[@]}" build backend envoy
-"${compose[@]}" up --detach
-wait_ready
-status=$(request "$temp_dir/default-panic-marker" --header 'x-coraza-probe: panic' \
-    http://127.0.0.1:10001/echo)
-check_status 200 "$status" 'default build with the panic probe header'
+
+start_envoy "$temp_dir/phase-policy.yaml"
+status=$(request "$temp_dir/default-panic" --header 'x-coraza-probe: panic' http://127.0.0.1:10001/healthy)
+check_status 200 "$status" 'default build with the panic-probe header'
 if envoy_logs | grep --quiet --fixed-strings 'caught panic'; then
-    fail 'default build executed a request-triggered panic'
+    fail 'default build executed the feature-gated panic probe'
 fi
-"${compose[@]}" down --volumes >/dev/null
 
-cp "$target_dir/panic-probe/release/libenvoy_coraza_dynamic.so" \
-    "$target_dir/envoy-coraza-dynamic-probe.so"
-"${compose[@]}" build envoy
+before=$(backend_count /phase1-deny)
+status=$(request "$temp_dir/phase1" http://127.0.0.1:10001/phase1-deny)
+check_status 451 "$status" 'phase-1 rule denial'
+[[ $(backend_count /phase1-deny) == "$before" ]] || fail 'phase-1 denied request reached the backend'
 
-empty_module_dir="$temp_dir/missing-modules"
-mkdir -p "$empty_module_dir"
-expect_startup_rejection missing-library "$script_dir/envoy.yaml" "$empty_module_dir"
-
-corrupt_module_dir="$temp_dir/corrupt-modules"
-mkdir -p "$corrupt_module_dir"
-printf 'not an ELF shared object\n' >"$corrupt_module_dir/libenvoy_coraza_dynamic.so"
-expect_startup_rejection corrupt-library "$script_dir/envoy.yaml" "$corrupt_module_dir"
-
-wrong_arch_module_dir="$temp_dir/wrong-architecture-modules"
-mkdir -p "$wrong_arch_module_dir"
-cp "$target_dir/envoy-coraza-dynamic-probe.so" \
-    "$wrong_arch_module_dir/libenvoy_coraza_dynamic.so"
-python3 - "$wrong_arch_module_dir/libenvoy_coraza_dynamic.so" <<'PY'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-with path.open("r+b") as library:
-    library.seek(18)
-    library.write((183).to_bytes(2, "little"))  # ELF EM_AARCH64 in the x86-64 artifact.
-PY
-expect_startup_rejection wrong-architecture "$script_dir/envoy.yaml" "$wrong_arch_module_dir"
-
-for variant in unknown-name malformed-json malformed-utf8; do
-    write_config_variant "$variant" "$temp_dir/$variant.yaml"
-    expect_startup_rejection "$variant" "$temp_dir/$variant.yaml"
-done
-
-"${compose[@]}" up --detach
-wait_ready
-
-status=$(request "$temp_dir/hold" --header 'x-coraza-probe: hold' \
-    http://127.0.0.1:10001/hold)
-check_status 200 "$status" 'held request headers and scheduled continuation'
-require_log 'callback=request_headers mode=Hold'
-require_log 'callback=scheduled action=continue_decoding'
-
-python3 - "$temp_dir/body" "$temp_dir/body.headers" <<'PY'
+before=$(backend_count /phase1-deny)
+python3 - <<'PY'
 import http.client
-import sys
-import time
 
-body_path, headers_path = sys.argv[1:]
 connection = http.client.HTTPConnection("127.0.0.1", 10001, timeout=10)
 try:
-    connection.putrequest("POST", "/echo", skip_accept_encoding=True)
-    connection.putheader("x-coraza-probe", "body")
-    connection.putheader("Transfer-Encoding", "chunked")
-    connection.putheader("Connection", "close")
-    connection.endheaders()
-    chunks = [b"frame-one-", b"frame-two-", b"frame-three"]
-    for chunk in chunks:
-        connection.send(f"{len(chunk):X}\r\n".encode("ascii") + chunk + b"\r\n")
-        time.sleep(0.1)
-    connection.send(b"0\r\n\r\n")
+    connection.request("HEAD", "/phase1-deny")
     response = connection.getresponse()
-    with open(headers_path, "wb") as output:
-        output.write(f"HTTP/1.1 {response.status}\r\n".encode())
-        for name, value in response.getheaders():
-            output.write(f"{name}: {value}\r\n".encode("iso-8859-1"))
-    with open(body_path, "wb") as output:
-        output.write(response.read())
-    if response.status != 200:
-        raise RuntimeError(f"body probe returned {response.status}")
+    body = response.read()
+    if response.status != 451 or body:
+        raise RuntimeError(f"HEAD denial returned status={response.status}, body={body!r}")
 finally:
     connection.close()
 PY
-if ! cmp --silent <(printf 'frame-one-frame-two-frame-three') "$temp_dir/body"; then
-    python3 - "$temp_dir/body" <<'PY'
+[[ $(backend_count /phase1-deny) == "$before" ]] || fail 'HEAD denial reached the backend'
+
+status=$(request "$temp_dir/redirect" --dump-header "$temp_dir/redirect.headers" \
+    http://127.0.0.1:10001/redirect-deny)
+check_status 307 "$status" 'rule-configured redirect status'
+grep --ignore-case --quiet --fixed-strings 'location: https://example.test/blocked' "$temp_dir/redirect.headers" \
+    || fail 'configured redirect location was missing'
+[[ ! -s "$temp_dir/redirect" ]] || fail 'redirect denial returned a response body'
+
+status=$(request "$temp_dir/no-content" http://127.0.0.1:10001/no-content)
+check_status 204 "$status" 'rule-configured 204 denial'
+[[ ! -s "$temp_dir/no-content" ]] || fail '204 denial returned a response body'
+status=$(request "$temp_dir/not-modified" http://127.0.0.1:10001/not-modified)
+check_status 304 "$status" 'rule-configured 304 denial'
+[[ ! -s "$temp_dir/not-modified" ]] || fail '304 denial returned a response body'
+
+before=$(backend_count /echo)
+status=$(request "$temp_dir/body-deny" --request POST --header 'content-type: text/plain' \
+    --data-binary 'body-attack' http://127.0.0.1:10001/echo)
+check_status 429 "$status" 'phase-2 request-body rule denial'
+[[ $(backend_count /echo) == "$before" ]] || fail 'phase-2 denied request reached the backend'
+
+before=$(backend_count /echo)
+status=$(request "$temp_dir/unsupported-encoding" --request POST --header 'content-type: text/plain' \
+    --header 'content-encoding: gzip' --data-binary 'encoded' http://127.0.0.1:10001/echo)
+check_status 415 "$status" 'unsupported request content encoding'
+[[ $(backend_count /echo) == "$before" ]] || fail 'unsupported-encoding request reached the backend'
+
+status=$(request "$temp_dir/upgrade" --header 'Connection: Upgrade' --header 'Upgrade: websocket' \
+    http://127.0.0.1:10001/upgrade)
+if [[ $status != 501 ]]; then
+    cat "$temp_dir/upgrade" >&2
+    fail "unsupported request upgrade returned HTTP $status, expected 501"
+fi
+
+python3 - "$temp_dir/upload" <<'PY'
+import http.client
 import pathlib
 import sys
-print(f"unexpected backend body: {pathlib.Path(sys.argv[1]).read_bytes()!r}", file=sys.stderr)
-PY
-    fail 'buffered multi-frame request body changed'
-fi
-require_log 'callback=request_body mode=Body'
-require_log 'callback=request_body mode=Body eos=true'
 
-python3 - "$temp_dir/trailer-body" "$temp_dir/trailer.headers" <<'PY'
-import http.client
-import sys
-import time
-
-body_path, headers_path = sys.argv[1:]
-connection = http.client.HTTPConnection("127.0.0.1", 10001, timeout=10)
+output = pathlib.Path(sys.argv[1])
+payload = bytes(range(256)) * 256
+chunks = [payload[:16383], payload[16383:16384], payload[16384:32768], payload[32768:]]
+connection = http.client.HTTPConnection("127.0.0.1", 10001, timeout=15)
 try:
     connection.putrequest("POST", "/echo", skip_accept_encoding=True)
-    connection.putheader("x-coraza-probe", "trailer")
+    connection.putheader("Content-Type", "application/octet-stream")
+    connection.putheader("Transfer-Encoding", "chunked")
+    connection.putheader("Connection", "close")
+    connection.endheaders()
+    for chunk in chunks:
+        connection.send(f"{len(chunk):X}\r\n".encode("ascii") + chunk + b"\r\n")
+    connection.send(b"0\r\n\r\n")
+    response = connection.getresponse()
+    body = response.read()
+    if response.status != 200 or body != payload:
+        raise RuntimeError(f"multi-frame upload mismatch: status={response.status} bytes={len(body)}")
+    output.write_bytes(body)
+finally:
+    connection.close()
+PY
+cmp --silent <(python3 -c 'import sys; sys.stdout.buffer.write(bytes(range(256)) * 256)') "$temp_dir/upload" \
+    || fail 'allowed multi-frame upload changed across 16 KiB boundaries'
+
+python3 - "$temp_dir/trailer-body" "$temp_dir/trailer-headers" <<'PY'
+import http.client
+import pathlib
+import sys
+
+body_path, headers_path = map(pathlib.Path, sys.argv[1:])
+connection = http.client.HTTPConnection("127.0.0.1", 10001, timeout=15)
+try:
+    connection.putrequest("POST", "/echo", skip_accept_encoding=True)
+    connection.putheader("Content-Type", "text/plain")
     connection.putheader("Transfer-Encoding", "chunked")
     connection.putheader("Trailer", "x-client-trailer")
     connection.putheader("Connection", "close")
     connection.endheaders()
     for chunk in (b"trailer-", b"terminated"):
         connection.send(f"{len(chunk):X}\r\n".encode("ascii") + chunk + b"\r\n")
-        time.sleep(0.1)
-    connection.send(b"0\r\nx-client-trailer: present\r\n\r\n")
+    connection.send(b"0\r\nx-client-trailer: preserved\r\n\r\n")
     response = connection.getresponse()
-    with open(headers_path, "wb") as output:
-        output.write(f"HTTP/1.1 {response.status}\r\n".encode())
-        for name, value in response.getheaders():
-            output.write(f"{name}: {value}\r\n".encode("iso-8859-1"))
-    with open(body_path, "wb") as output:
-        output.write(response.read())
-    if response.status != 200:
-        raise RuntimeError(f"trailer probe returned {response.status}")
+    headers = response.getheaders()
+    body = response.read()
+    if response.status != 200 or body != b"trailer-terminated":
+        raise RuntimeError(f"trailer-terminated body mismatch: status={response.status}, body={body!r}")
+    if not any(name.lower() == "x-client-trailer-seen" and value == "preserved" for name, value in headers):
+        raise RuntimeError(f"backend did not receive the trailer: {headers!r}")
+    body_path.write_bytes(body)
+    headers_path.write_text(repr(headers))
 finally:
     connection.close()
 PY
-cmp --silent <(printf 'trailer-terminated') "$temp_dir/trailer-body" \
-    || fail 'trailer-terminated request body changed'
-grep --ignore-case --quiet '^x-client-trailer-seen: present' "$temp_dir/trailer.headers" \
-    || fail 'request trailer did not reach the backend'
-require_log 'callback=request_trailers mode=Trailer'
 
-before=$(backend_count /denied)
-status=$(request "$temp_dir/denied" --header 'x-coraza-probe: deny' \
-    http://127.0.0.1:10001/denied)
-check_status 403 "$status" 'held-header local reply denial'
-[[ $(backend_count /denied) == "$before" ]] || fail 'denied request reached the backend'
-grep --quiet --fixed-strings 'probe denied' "$temp_dir/denied" || fail 'denial body was missing'
-require_log 'callback=local_reply status=403 nested_request_headers=true'
-[[ $(envoy_logs | grep -c --fixed-strings 'callback=local_reply status=403' || true) == 1 ]] \
-    || fail 'request denial was processed more than once'
+"${compose[@]}" down --volumes >/dev/null
 
-status=$(request "$temp_dir/replacement" --dump-header "$temp_dir/replacement.headers" \
-    --header 'x-coraza-probe: replace' http://127.0.0.1:10001/response-deny)
-check_status 200 "$status" 'encode-path response replacement'
-[[ $(cat "$temp_dir/replacement") == 'replacement response' ]] \
-    || fail 'replacement response body was not delivered'
-if grep --ignore-case --quiet -E '^(x-upstream-secret|set-cookie):' "$temp_dir/replacement.headers"; then
-    fail 'replacement leaked upstream response headers'
-fi
-if grep --quiet --fixed-strings 'secret' "$temp_dir/replacement"; then
-    fail 'replacement leaked upstream response body bytes'
-fi
-require_log 'callback=response_headers action=replace'
+detection_policy='{"directives_map":{"main":["SecRuleEngine DetectionOnly","SecRequestBodyAccess On","SecRequestBodyLimit 16777216","SecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:2,phase:1,deny,status:451\"","SecRule REQUEST_BODY \"@contains body-attack\" \"id:3,phase:2,deny,status:429\""]},"default_directives":"main"}'
+write_bootstrap "$detection_policy" "$temp_dir/detection-only.yaml"
+start_envoy "$temp_dir/detection-only.yaml"
+status=$(request "$temp_dir/detection-phase1" http://127.0.0.1:10001/phase1-deny)
+check_status 200 "$status" 'DetectionOnly phase-1 would-be denial'
+status=$(request "$temp_dir/detection-phase2" --request POST --header 'content-type: text/plain' \
+    --data-binary 'body-attack' http://127.0.0.1:10001/echo)
+check_status 200 "$status" 'DetectionOnly phase-2 would-be denial'
+[[ $(cat "$temp_dir/detection-phase2") == 'body-attack' ]] || fail 'DetectionOnly changed the request body'
+"${compose[@]}" down --volumes >/dev/null
 
-python3 - "$temp_dir/limit" "$temp_dir/limit.meta" <<'PY'
-import select
-import socket
-import struct
-import sys
+body_off_policy='{"directives_map":{"body_off":["SecRuleEngine On","SecRequestBodyAccess Off","SecRule REQUEST_BODY \"@contains body-attack\" \"id:4,phase:2,deny,status:429\""]},"default_directives":"body_off"}'
+write_bootstrap "$body_off_policy" "$temp_dir/body-off.yaml"
+start_envoy "$temp_dir/body-off.yaml"
+status=$(request "$temp_dir/body-off" --request POST --header 'content-type: text/plain' \
+    --data-binary 'body-attack' http://127.0.0.1:10001/echo)
+check_status 200 "$status" 'SecRequestBodyAccess Off'
+[[ $(cat "$temp_dir/body-off") == 'body-attack' ]] || fail 'body-access-off request changed the upload'
+"${compose[@]}" down --volumes >/dev/null
 
-output_path, metadata_path = sys.argv[1:]
-body_size = 2 * 1024 * 1024
-body = b"L" * body_size
-connection = socket.create_connection(("127.0.0.1", 10001), timeout=5)
-connection.settimeout(0.5)
-try:
-    request = (
-        "POST /limit HTTP/1.1\r\n"
-        "Host: localhost\r\n"
-        "x-coraza-probe: limit\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n\r\n"
-    ).encode("ascii")
-    connection.sendall(request)
-    sent = 0
-    while sent < body_size:
-        chunk = body[sent : sent + 16384]
-        try:
-            connection.sendall(chunk)
-            sent += len(chunk)
-        except socket.timeout:
-            break
-    readable, _, _ = select.select([connection], [], [], 0.5)
-    try:
-        data = connection.recv(4096) if readable else b""
-    except ConnectionResetError:
-        data = b"reset"
-    with open(output_path, "wb") as output:
-        output.write(data)
-    with open(metadata_path, "w", encoding="ascii") as output:
-        output.write(f"{sent} {body_size}\n")
-    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-finally:
-    connection.close()
-PY
-grep --text --quiet --fixed-strings 'HTTP/1.1 413' "$temp_dir/limit" \
-    || fail 'held-header buffer-limit overflow did not produce HTTP 413'
-read -r sent_body total_body <"$temp_dir/limit.meta"
-(( sent_body > 0 && sent_body <= total_body )) \
-    || fail "buffer-limit probe sent an invalid body length ($sent_body of $total_body)"
-printf 'buffer-limit overflow: Envoy returned 413 after the client sent %s of %s bytes\n' \
-    "$sent_body" "$total_body"
-[[ $(backend_count /limit) == 0 ]] || fail 'held-header over-limit request reached the backend'
-require_log 'requested=32 current=32 headers_held=true'
-require_log 'callback=local_reply status=413'
+engine_off_policy='{"directives_map":{"off":["SecRuleEngine Off","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:7,phase:1,deny,status:451\""]},"default_directives":"off"}'
+write_bootstrap "$engine_off_policy" "$temp_dir/engine-off.yaml"
+start_envoy "$temp_dir/engine-off.yaml"
+status=$(request "$temp_dir/engine-off" http://127.0.0.1:10001/phase1-deny)
+check_status 200 "$status" 'SecRuleEngine Off explicit uninspected pass'
+"${compose[@]}" down --volumes >/dev/null
 
-status=$(request "$temp_dir/panic" --header 'x-coraza-probe: panic' \
-    http://127.0.0.1:10001/panic)
+unmatched_policy='{"directives_map":{"protected":["SecRuleEngine On","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:5,phase:1,deny,status:451\""]},"per_authority_directives":{"protected.test":"protected"}}'
+write_bootstrap "$unmatched_policy" "$temp_dir/unmatched.yaml"
+start_envoy "$temp_dir/unmatched.yaml"
+status=$(request "$temp_dir/unmatched" --header 'Host: unmatched.test' http://127.0.0.1:10001/phase1-deny)
+check_status 200 "$status" 'unmatched authority bypass'
+status=$(request "$temp_dir/matched-authority" --header 'Host: protected.test' http://127.0.0.1:10001/phase1-deny)
+check_status 451 "$status" 'normalized authority policy selection'
+"${compose[@]}" down --volumes >/dev/null
+
+write_bootstrap '{}' "$temp_dir/empty-config.yaml"
+start_envoy "$temp_dir/empty-config.yaml"
+status=$(request "$temp_dir/empty-config" http://127.0.0.1:10001/phase1-deny)
+check_status 200 "$status" 'empty policy configuration bypass'
+"${compose[@]}" down --volumes >/dev/null
+
+first_instance='{"directives_map":{"first":["SecRuleEngine On","SecRule REQUEST_URI \"@contains first-instance\" \"id:10,phase:1,deny,status:451\""]},"default_directives":"first"}'
+second_instance='{"directives_map":{"second":["SecRuleEngine On","SecRule REQUEST_URI \"@contains second-instance\" \"id:11,phase:1,deny,status:452\""]},"default_directives":"second"}'
+write_bootstrap "$first_instance" "$temp_dir/two-instances.yaml" "$second_instance"
+start_envoy "$temp_dir/two-instances.yaml"
+status=$(request "$temp_dir/first-instance" http://127.0.0.1:10001/first-instance)
+check_status 451 "$status" 'first independent filter policy'
+status=$(request "$temp_dir/second-instance" http://127.0.0.1:10001/second-instance)
+check_status 452 "$status" 'second independent filter policy'
+status=$(request "$temp_dir/two-instance-allow" http://127.0.0.1:10001/allowed)
+check_status 200 "$status" 'independent filter pass'
+"${compose[@]}" down --volumes >/dev/null
+
+write_bootstrap '{}' "$temp_dir/empty.yaml"
+unknown_config="$temp_dir/unknown-name.yaml"
+write_bootstrap '{}' "$unknown_config"
+sed -i '0,/filter_name: coraza/s//filter_name: unknown/' "$unknown_config"
+expect_startup_rejection unknown-filter-name "$unknown_config"
+
+invalid_json_config="$temp_dir/invalid-json.yaml"
+write_bootstrap 'not-json' "$invalid_json_config"
+expect_startup_rejection malformed-json "$invalid_json_config"
+
+invalid_utf8_config="$temp_dir/invalid-utf8.yaml"
+write_bootstrap '__INVALID_UTF8__' "$invalid_utf8_config"
+expect_startup_rejection malformed-utf8 "$invalid_utf8_config"
+
+cargo build --locked --release -p envoy-coraza-dynamic --features panic-probe --target-dir "$panic_target_dir"
+cp "$panic_target_dir/release/libenvoy_coraza_dynamic.so" "$panic_module_file"
+export ENVOY_CORAZA_DYNAMIC_MODULE="target/$panic_module_name"
+"${compose[@]}" build envoy
+write_bootstrap '{}' "$temp_dir/panic.yaml"
+start_envoy "$temp_dir/panic.yaml"
+before=$(backend_count /panic)
+status=$(request "$temp_dir/panic" --header 'x-coraza-probe: panic' http://127.0.0.1:10001/panic)
 check_status 500 "$status" 'feature-gated request panic fail-closed response'
-[[ $(backend_count /panic) == 0 ]] || fail 'panicking request reached the backend'
+[[ $(backend_count /panic) == "$before" ]] || fail 'panicking request reached the backend'
 status=$(request "$temp_dir/panic-followup" http://127.0.0.1:10001/healthy)
 check_status 200 "$status" 'healthy request after request panic'
 
-response_panic_status=$(curl --silent --show-error --max-time 5 --output "$temp_dir/response-panic" \
-    --write-out '%{http_code}' --header 'x-coraza-probe: panic-response' \
-    http://127.0.0.1:10001/response-deny 2>/dev/null || true)
-[[ $response_panic_status == 000 ]] \
-    || fail "response panic returned HTTP $response_panic_status instead of resetting the stream"
-status=$(request "$temp_dir/response-panic-followup" http://127.0.0.1:10001/healthy)
-check_status 200 "$status" 'healthy request after response panic reset'
-
-envoy_logs >"$temp_dir/envoy.log"
-printf 'Observed probe log excerpt:\n'
-grep --fixed-strings 'coraza-dynamic-probe' "$temp_dir/envoy.log" | tail --lines=30
-printf 'Envoy 1.40 dynamic-module lifecycle checks passed\n'
+printf 'Envoy 1.40 native request-enforcement checks passed\n'
