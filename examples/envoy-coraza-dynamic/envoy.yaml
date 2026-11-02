@@ -1,0 +1,74 @@
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    - name: ingress
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10001
+      per_connection_buffer_limit_bytes: 16777216
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: coraza_dynamic_ingress
+                codec_type: AUTO
+                proxy_100_continue: false
+                http_protocol_options:
+                  enable_trailers: true
+                stream_idle_timeout: 30s
+                route_config:
+                  name: local_routes
+                  virtual_hosts:
+                    - name: probe_service
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: backend
+                            timeout: 30s
+                          request_body_buffer_limit: 16777216
+                http_filters:
+                  - name: envoy.filters.http.dynamic_modules
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config:
+                        name: envoy_coraza_dynamic
+                        do_not_close: true
+                        load_globally: false
+                      filter_name: coraza
+                      filter_config:
+                        "@type": type.googleapis.com/google.protobuf.StringValue
+                        value: '{"probe":"stage-a"}'
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: backend
+      type: STRICT_DNS
+      connect_timeout: 1s
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http_protocol_options:
+              enable_trailers: true
+      per_connection_buffer_limit_bytes: 16777216
+      load_assignment:
+        cluster_name: backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: backend
+                      port_value: 3000
