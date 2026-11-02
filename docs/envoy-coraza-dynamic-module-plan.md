@@ -616,3 +616,68 @@ response-denial mechanism, re-entry behavior and buffer-limit effects. No module
 was built or run to validate those contracts while writing this plan. Broader
 Envoy-version support, Istio installation and safe `dlclose` are later work,
 not implied by the initial source review.
+
+## 11. Decision addendum (confirmed 2026-11-02)
+
+Confirmed by the repository owner after review. Where this addendum conflicts
+with the text above, this addendum wins.
+
+1. **Target**: standalone Envoy 1.40.0 only. Istio is explicitly deferred and
+   no Istio claim is made by this work.
+2. **Positioning**: the native module ships as a separate, clearly labeled
+   experimental artifact beside the Wasm filter. The replace-or-keep decision
+   is made later from the Stage F evidence.
+3. **Blockers**: stop and report with evidence. No toolchain, lint, or
+   image-pin relaxation without owner approval.
+4. **Admission budget**: the 64 MiB retained-body budget is module-wide,
+   shared by every configuration, generation, and filter instance of the
+   loaded module.
+5. **Filter-state keys**: compatibility keys (`wasm.io.coraza.waf.*`,
+   `wasm.io.coraza.waf.v1.*`) first; a clean-key migration is a later
+   decision.
+6. **Benchmark gate**: detector/engine benchmarks run only when `coraza/` or
+   `libperfusion/` code changed; the native-vs-Wasm Envoy comparison uses the
+   full at-least-three-paired-repetitions protocol; a gate that cannot run is
+   recorded incomplete, never silently skipped.
+7. **Review completion**: done means no open Critical/High findings. Those are
+   fixed and re-reviewed once by the same reviewer; Medium/Low go to the
+   ledger.
+8. **Review roles**: the review lane uses a different model (DeepSeek V4.1)
+   than the implementation lane (GPT-6-Luna, high effort), keeping reviewer
+   and implementer separate. Reviewers report; the implementation lane
+   implements.
+9. **Improvement over parity**: simpler-and-safer beats Wasm parity. Prefer
+   the better mechanism, for example the native local-reply path, even where
+   it diverges from the Wasm approach. Supersedes the parity-first wording of
+   the denial bullets in section 5.
+10. **Blocked acceptance cases**: record-and-continue. Individual
+    environment-blocked cases are listed INCOMPLETE with the reason; only a
+    Stage A gate failure or a systemic blocker halts the lane.
+11. **Follow-up ledger**: `docs/envoy-coraza-dynamic-followups.md`, created
+    with the first review finding that lands there.
+12. **Release pipeline**: GoReleaser/release integration is in scope for this
+    lane, publishing distinct native artifacts.
+13. **CRS evidence standard**: better than the Wasm artifact's standard.
+14. **CRS conformance**: a full go-ftw CRS conformance run against the native
+    module inside Envoy, divergence-ledgered against the engine's own FTW
+    results. A full native-vs-Wasm CRS outcome diff is a follow-up item.
+    Supersedes the CRS row of section 8.
+15. **Release assets**: `coraza-rs-dynamic.so` and
+    `coraza-rs-dynamic-crs.so` (checksummed, with provenance) plus derived
+    Docker images `ghcr.io/networking-incubator/coraza-rs-dynamic-envoy` and
+    `...-dynamic-crs-envoy` on a pinned Envoy 1.40.0 base, following the
+    existing nightly/tag workflow under separate names.
+16. **Outcome contract**: the denial mechanism may diverge per decision 9, but
+    the outcome contract is non-negotiable: rule-configured status, redirects,
+    zero upstream header/body/trailer leakage, and empty bodies for
+    HEAD/204/304. Every observable divergence from the Wasm artifact is
+    recorded in the stage evidence documents, never silent.
+17. **Architectures**: amd64 and arm64 are both published. Docker buildx
+    multi-platform builds compile natively per architecture; the full
+    acceptance gate runs on amd64; arm64 receives load-and-smoke verification
+    labeled in the provenance, or an INCOMPLETE record where the environment
+    cannot emulate. Docker images are multi-arch manifests under one tag.
+    Supersedes the x86-64-only wording of section 4.
+18. **Delivery**: the lane lands on a single `envoy-coraza-dynamic` feature
+    branch; each wave is merged and gate-run incrementally; `main` is
+    untouched until the owner merges.
