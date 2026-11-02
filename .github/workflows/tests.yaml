@@ -36,6 +36,8 @@ jobs:
 
       - name: Set up Rust (stable + nightly fmt)
         uses: $/.github/actions/setup-rust-lint
+        with:
+          libclang: true
 
       - name: Cache cargo-machete
         id: cache-machete
@@ -73,6 +75,8 @@ jobs:
 
       - name: Set up Rust
         uses: $/.github/actions/setup-rust
+        with:
+          libclang: true
 
       - name: Test
         run: make test
@@ -126,6 +130,56 @@ jobs:
         run: bash examples/envoy-coraza/test-envoy.sh
         env:
           ENVOY_CORAZA_MAKE_TARGET: build-envoy-wasm-crs
+
+  envoy-dynamic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: $/.github/actions/setup-rust
+        with:
+          cache-suffix: envoy-dynamic
+          libclang: true
+
+      - name: Build native Envoy module
+        run: make build-envoy-dynamic
+
+      - name: Run native Envoy integration checks
+        run: make test-envoy-dynamic
+
+  envoy-dynamic-crs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: $/.github/actions/setup-rust
+        with:
+          cache-suffix: envoy-dynamic-crs
+          libclang: true
+
+      - name: Fetch the pinned CRS release
+        run: make crs-fetch
+
+      - name: Build native Envoy module with embedded CRS
+        run: make build-envoy-dynamic-crs
+
+      - name: Test the embedded CRS policy
+        run: cargo test -p envoy-coraza-dynamic --features embed-crs
+
+      - name: Run native Envoy integration checks
+        run: make test-envoy-dynamic
 
   meta-lint:
     runs-on: ubuntu-24.04
@@ -181,6 +235,7 @@ jobs:
         uses: $/.github/actions/setup-rust
         with:
           cache-suffix: features
+          libclang: true
 
       - name: Cache cargo-hack
         id: cache-hack

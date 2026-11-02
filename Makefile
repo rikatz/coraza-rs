@@ -27,7 +27,7 @@ ifneq ($(V),)
   _NOCAPTURE := -- --nocapture
 endif
 
-.PHONY: all build build-envoy-wasm build-envoy-wasm-crs test-envoy-wasm-crs run-envoy-crs build-envoy-wasm-image crs-fetch crs-clean crs-restamp check clean test conformance-check conformance-refresh parity-manifest-check parity-differential go-harness-check coraza-coordinator-check coraza-parity coraza-bench ftw-runner-check coraza-example-test ftw-smoke lint lint-extra audit coverage-check fmt doc setup-hooks help
+.PHONY: all build build-envoy-wasm build-envoy-wasm-crs test-envoy-wasm-crs run-envoy-crs build-envoy-wasm-image build-envoy-dynamic build-envoy-dynamic-crs test-envoy-dynamic crs-fetch crs-clean crs-restamp check clean test conformance-check conformance-refresh parity-manifest-check parity-differential go-harness-check coraza-coordinator-check coraza-parity coraza-bench ftw-runner-check coraza-example-test ftw-smoke lint lint-extra audit coverage-check fmt doc setup-hooks help
 
 all: build fmt lint lint-extra test audit coverage-check
 
@@ -48,6 +48,15 @@ build-envoy-wasm:
 build-envoy-wasm-crs: crs-fetch
 	rustup target add wasm32-wasip1
 	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build --locked --release --target wasm32-wasip1 -p envoy-libperfusion -p envoy-coraza --features envoy-coraza/embed-crs
+
+build-envoy-dynamic:
+	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build --locked --release -p envoy-coraza-dynamic
+
+build-envoy-dynamic-crs: crs-fetch
+	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build --locked --release -p envoy-coraza-dynamic --features envoy-coraza-dynamic/embed-crs
+
+test-envoy-dynamic:
+	bash examples/envoy-coraza-dynamic/test-envoy.sh
 
 test-envoy-wasm-crs: crs-fetch
 	cargo test -p envoy-coraza --features embed-crs $(_NOCAPTURE)
@@ -243,6 +252,9 @@ help:
 	@echo "  build      cargo build --workspace"
 	@echo "  build-envoy-wasm       build the release Envoy filter for wasm32-wasip1"
 	@echo "  build-envoy-wasm-crs   fetch the pinned CRS release and build the filter with it embedded"
+	@echo "  build-envoy-dynamic    build the native Envoy dynamic module (requires clang/libclang)"
+	@echo "  build-envoy-dynamic-crs fetch the pinned CRS release and build the native module with it embedded"
+	@echo "  test-envoy-dynamic     run the native module's pinned Envoy integration harness"
 	@echo "  run-envoy-crs          run the example Envoy with the embedded CRS, no test assertions"
 	@echo "  test-envoy-wasm-crs    fetch the pinned CRS release and run the embedded-CRS tests"
 	@echo "  crs-fetch              download and verify the CRS release pinned in envoy-coraza/crs.pin"

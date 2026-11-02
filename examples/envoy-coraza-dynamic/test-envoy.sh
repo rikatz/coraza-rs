@@ -63,6 +63,35 @@ request() {
     curl --silent --show-error --output "$output" --write-out '%{http_code}' "$@"
 }
 
+abort_held_http1_upload() {
+    python3 - <<'PY'
+import select
+import socket
+import struct
+import time
+
+connection = socket.create_connection(("127.0.0.1", 10001), timeout=10)
+try:
+    connection.sendall(
+        b"POST /cancel-upload HTTP/1.1\r\n"
+        b"Host: example.test\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"Content-Length: 8388608\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    chunk = b"x" * (64 * 1024)
+    for _ in range(32):
+        connection.sendall(chunk)
+        time.sleep(0.01)
+    readable, _, _ = select.select([connection], [], [], 0.5)
+    if readable and connection.recv(4096):
+        raise RuntimeError("Envoy responded before the upload reached EOS")
+    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+finally:
+    connection.close()
+PY
+}
+
 backend_count() {
     local path=$1
     curl --silent --show-error --header 'Host: stats.local' --get --data-urlencode "path=$path" \
@@ -94,6 +123,13 @@ check_status() {
     local actual=$2
     local label=$3
     [[ $actual == "$expected" ]] || fail "$label returned HTTP $actual, expected $expected"
+}
+
+make_body_with_byte() {
+    local destination=$1
+    local size=$2
+    local byte=$3
+    head -c "$size" /dev/zero | tr '\000' "$byte" >"$destination"
 }
 
 wait_ready() {
@@ -156,8 +192,10 @@ PY
 
 start_envoy() {
     local config=$1
+    local concurrency=${2:-0}
     "${compose[@]}" down --volumes >/dev/null 2>&1 || true
-    ENVOY_CORAZA_DYNAMIC_CONFIG="$config" "${compose[@]}" up --detach
+    ENVOY_CORAZA_DYNAMIC_CONFIG="$config" \
+        ENVOY_CORAZA_DYNAMIC_CONCURRENCY="$concurrency" "${compose[@]}" up --detach
     wait_ready
 }
 
@@ -178,6 +216,7 @@ expect_startup_rejection() {
 phase_policy='{"directives_map":{"main":["SecRuleEngine On","SecAuditEngine RelevantOnly","SecAuditLogFormat JSON","SecRequestBodyAccess On","SecRequestBodyLimit 16777216","SecResponseBodyAccess On","SecResponseBodyLimit 1048576","SecResponseBodyMimeType text/plain","SecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:2,phase:1,deny,status:451\"","SecRule REQUEST_BODY \"@contains body-attack\" \"id:3,phase:2,deny,status:429\"","SecRule REQUEST_URI \"@contains redirect-deny\" \"id:4,phase:1,redirect:https://example.test/blocked,status:307\"","SecRule REQUEST_URI \"@contains no-content\" \"id:5,phase:1,deny,status:204\"","SecRule REQUEST_URI \"@contains not-modified\" \"id:6,phase:1,deny,status:304\"","SecRule RESPONSE_BODY \"@contains secret\" \"id:8,phase:4,deny,status:451,auditlog,msg:'stage-d-response-audit'\"","SecRule RESPONSE_HEADERS:x-deny-response \"@streq yes\" \"id:9,phase:4,deny,status:452\"","SecRule RESPONSE_BODY \"@contains response-redirect\" \"id:10,phase:4,redirect:https://example.test/response-blocked,status:307\""] ,"off":["SecRuleEngine On","SecResponseBodyAccess Off","SecRule RESPONSE_HEADERS:x-deny-response \"@streq yes\" \"id:11,phase:4,deny,status:452\""],"head":["SecRuleEngine On","SecRule RESPONSE_HEADERS:x-upstream-secret \"@streq upstream-header-marker\" \"id:12,phase:3,deny,status:204\""],"not-modified":["SecRuleEngine On","SecRule RESPONSE_HEADERS:x-upstream-secret \"@streq upstream-header-marker\" \"id:13,phase:3,deny,status:304\""],"limit":["SecRuleEngine On","SecResponseBodyAccess On","SecResponseBodyLimit 5","SecResponseBodyLimitAction Reject","SecResponseBodyMimeType text/plain"],"stats":["SecRuleEngine Off"]},"default_directives":"main","per_authority_directives":{"off.local":"off","head.local":"head","not-modified.local":"not-modified","limit.local":"limit","stats.local":"stats"},"enable_filter_state_logs":true}'
 write_bootstrap "$phase_policy" "$temp_dir/phase-policy.yaml"
 
+make -C "$repo_root" crs-fetch
 cargo build --locked --release -p envoy-coraza-dynamic
 cp "$target_dir/release/libenvoy_coraza_dynamic.so" "$module_file"
 export ENVOY_CORAZA_DYNAMIC_MODULE="target/$module_name"
@@ -193,6 +232,107 @@ fi
 status=$(request "$temp_dir/telemetry-allow" http://127.0.0.1:10001/telemetry-allow)
 check_status 200 "$status" 'healthy telemetry request'
 require_access_log /telemetry-allow 'event=- rule_id=- phase=- action=- status=- reason=complete outcome=completed complete=true'
+
+# Exercise worker-local stream state while the shared module admission remains
+# process-wide: the denied and byte-exact allowed requests run concurrently.
+start_envoy "$temp_dir/phase-policy.yaml" 2
+make_body_with_byte "$temp_dir/multi-worker-expected" 65536 x
+before=$(backend_count /phase1-deny)
+request "$temp_dir/multi-worker-deny" http://127.0.0.1:10001/phase1-deny \
+    >"$temp_dir/multi-worker-deny.status" &
+deny_pid=$!
+request "$temp_dir/multi-worker-allow" --request POST \
+    --header 'content-type: application/octet-stream' \
+    --data-binary "@$temp_dir/multi-worker-expected" http://127.0.0.1:10001/echo \
+    >"$temp_dir/multi-worker-allow.status" &
+allow_pid=$!
+if ! wait "$deny_pid"; then fail 'multi-worker deny request failed'; fi
+if ! wait "$allow_pid"; then fail 'multi-worker allow request failed'; fi
+check_status 451 "$(cat "$temp_dir/multi-worker-deny.status")" 'multi-worker request denial'
+check_status 200 "$(cat "$temp_dir/multi-worker-allow.status")" 'multi-worker allow request'
+[[ $(backend_count /phase1-deny) == "$before" ]] || fail 'multi-worker denied request reached the backend'
+cmp --silent "$temp_dir/multi-worker-expected" "$temp_dir/multi-worker-allow" \
+    || fail 'multi-worker allowed upload changed in transit'
+
+# Cap curl at one origin connection; stream IDs 1 and 3 prove multiplexing.
+python3 - "$temp_dir/http2-expected" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_bytes(bytes(range(256)) * 8)
+PY
+before=$(backend_count /phase1-deny)
+curl --parallel --parallel-max-host 1 --http2-prior-knowledge \
+    --trace-ascii "$temp_dir/http2.trace" --silent --show-error \
+    --output "$temp_dir/http2-deny" --write-out 'deny %{http_version} %{http_code}\n' \
+    http://127.0.0.1:10001/phase1-deny \
+    --next --parallel-max-host 1 --http2-prior-knowledge --silent --show-error \
+    --output "$temp_dir/http2-allow" --write-out 'allow %{http_version} %{http_code}\n' \
+    --request POST --header 'content-type: application/octet-stream' \
+    --data-binary "@$temp_dir/http2-expected" http://127.0.0.1:10001/echo \
+    >"$temp_dir/http2.status"
+grep --quiet --fixed-strings 'deny 2 451' "$temp_dir/http2.status" \
+    || fail 'HTTP/2 deny stream did not receive status 451'
+grep --quiet --fixed-strings 'allow 2 200' "$temp_dir/http2.status" \
+    || fail 'HTTP/2 allow stream did not receive status 200'
+grep --quiet --fixed-strings '[1] OPENED stream' "$temp_dir/http2.trace" \
+    || fail 'HTTP/2 first stream was not observed'
+grep --quiet --fixed-strings '[3] OPENED stream' "$temp_dir/http2.trace" \
+    || fail 'HTTP/2 second multiplexed stream was not observed'
+[[ $(backend_count /phase1-deny) == "$before" ]] || fail 'HTTP/2 denied stream reached the backend'
+cmp --silent "$temp_dir/http2-expected" "$temp_dir/http2-allow" \
+    || fail 'HTTP/2 allowed stream changed in transit'
+
+before=$(backend_count /cancel-upload)
+abort_held_http1_upload
+[[ $(backend_count /cancel-upload) == "$before" ]] || fail 'cancelled upload reached the backend before EOS'
+status=$(request "$temp_dir/cancel-followup" --max-time 10 \
+    http://127.0.0.1:10001/healthy-after-cancel)
+check_status 200 "$status" 'healthy request after cancelled upload'
+
+# Four incomplete 13 MiB bodies retain 52 MiB; the fifth crosses the 64 MiB
+# process-wide budget while remaining below the 16 MiB per-stream ceiling.
+python3 - <<'PY'
+import socket
+import struct
+
+address = ("127.0.0.1", 10001)
+reserved = []
+chunk = b"a" * (64 * 1024)
+try:
+    for index in range(5):
+        connection = socket.create_connection(address, timeout=30)
+        connection.settimeout(30)
+        reserved.append(connection)
+        connection.sendall(
+            b"POST /admission HTTP/1.1\r\n"
+            b"Host: example.test\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-Length: 15728640\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        for _ in range(13 * 16):
+            try:
+                connection.sendall(chunk)
+            except OSError:
+                break
+        if index == 4:
+            response = bytearray()
+            while b"\r\n" not in response:
+                data = connection.recv(1024)
+                if not data:
+                    break
+                response.extend(data)
+            if b" 503 " not in response:
+                raise RuntimeError(f"admission exhaustion was not denied with 503: {response!r}")
+finally:
+    for connection in reserved:
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        connection.close()
+PY
+status=$(request "$temp_dir/admission-followup" --max-time 10 \
+    http://127.0.0.1:10001/healthy-after-admission)
+check_status 200 "$status" 'healthy request after admission reservations release'
 
 before=$(backend_count /response-deny)
 status=$(request "$temp_dir/response-body-deny" --dump-header "$temp_dir/response-body-deny.headers" \

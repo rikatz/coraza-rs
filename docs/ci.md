@@ -20,6 +20,18 @@ This repository uses GitHub Actions to block risky changes early.
   `ENVOY_CORAZA_MAKE_TARGET=build-envoy-wasm-crs`; that run adds a `crs.local`
   policy that includes the embedded tree and asserts a SQL injection request is
   denied by CRS rule 949110.
+- `envoy-dynamic`: installs the native SDK's clang/libclang build prerequisites,
+  builds the native Envoy module, and runs the native harness against the
+  digest-pinned Envoy 1.40.0 image. The harness covers request/response
+  enforcement, two workers, concurrent HTTP/2 streams, cancellation, and
+  behavioral admission exhaustion.
+- `envoy-dynamic-crs`: fetches the same pinned CRS, builds and unit-tests the
+  native module with `embed-crs`, then runs the native Envoy harness including
+  benign and malicious CRS requests.
+- Workspace lint, test, feature-matrix, MSRV, and coverage jobs install
+  `clang` and `libclang-dev` through the Rust setup actions because compiling
+  the dynamic-module SDK runs bindgen. The Wasm artifact and build targets are
+  unchanged.
 - Meta-lint: `make lint-extra` (typos, taplo over `**/*.toml`, actionlint,
   shellcheck); the downloaded tools are version- and checksum-pinned, see
   [Lint tool trust](#lint-tool-trust).
@@ -161,6 +173,9 @@ by the fixture regeneration command.
 make lint
 make lint-extra
 make test
+make build-envoy-dynamic
+make test-envoy-dynamic
+make build-envoy-dynamic-crs
 make crs-fetch
 make test-envoy-wasm-crs
 make go-harness-check
@@ -170,6 +185,11 @@ make ftw-smoke
 make audit
 make coverage-check
 ```
+
+Native module builds require `clang` and `libclang-dev` (for example,
+`sudo apt-get install --no-install-recommends clang libclang-dev` on Ubuntu).
+The harness additionally requires Docker Compose, curl with HTTP/2 support,
+Python 3, and an unused local port 9901.
 
 To run the full gate set:
 

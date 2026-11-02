@@ -18,6 +18,8 @@ services:
       - /etc/envoy/envoy.yaml
       - --log-level
       - info
+      - --concurrency
+      - ${ENVOY_CORAZA_DYNAMIC_CONCURRENCY:-0}
     depends_on:
       - backend
     ports:
