@@ -23,10 +23,13 @@ if [[ $target_dir != /* ]]; then
     target_dir="$repo_root/$target_dir"
 fi
 panic_target_dir="$target_dir/stage-c-panic-$$_$RANDOM"
+crs_target_dir="$target_dir/stage-d-crs-$$_$RANDOM"
 module_name="envoy-coraza-dynamic-stage-c-$$_$RANDOM.so"
 panic_module_name="envoy-coraza-dynamic-stage-c-panic-$$_$RANDOM.so"
+crs_module_name="envoy-coraza-dynamic-stage-d-crs-$$_$RANDOM.so"
 module_file="$repo_root/target/$module_name"
 panic_module_file="$repo_root/target/$panic_module_name"
+crs_module_file="$repo_root/target/$crs_module_name"
 temp_dir=$(mktemp -d)
 
 cleanup() {
@@ -36,8 +39,8 @@ cleanup() {
         "${compose[@]}" logs --no-color envoy backend 2>&1 | tail --lines=80 >&2 || true
     fi
     "${compose[@]}" down --rmi local --volumes >/dev/null 2>&1 || true
-    rm -f "$module_file" "$panic_module_file"
-    rm -rf "$panic_target_dir" "$temp_dir"
+    rm -f "$module_file" "$panic_module_file" "$crs_module_file"
+    rm -rf "$panic_target_dir" "$crs_target_dir" "$temp_dir"
     exit "$exit_code"
 }
 trap cleanup EXIT
@@ -62,11 +65,28 @@ request() {
 
 backend_count() {
     local path=$1
-    curl --silent --show-error --get --data-urlencode "path=$path" http://127.0.0.1:10001/__stats
+    curl --silent --show-error --header 'Host: stats.local' --get --data-urlencode "path=$path" \
+        http://127.0.0.1:10001/__stats
 }
 
 envoy_logs() {
     "${compose[@]}" logs --no-color --no-log-prefix envoy 2>/dev/null || true
+}
+
+require_access_log() {
+    local path=$1
+    local expected=$2
+    for _attempt in {1..100}; do
+        local latest
+        latest=$(envoy_logs | grep --fixed-strings "path=$path " | tail --lines=1 || true)
+        if [[ $latest == *"$expected"* ]]; then
+            return
+        fi
+        sleep 0.1
+    done
+    envoy_logs >"$temp_dir/envoy.log"
+    grep --fixed-strings 'path=' "$temp_dir/envoy.log" >&2 || true
+    fail "Envoy access log for $path did not contain: $expected"
 }
 
 check_status() {
@@ -155,7 +175,7 @@ expect_startup_rejection() {
     printf 'negative-control %s: startup rejected; listener did not serve traffic\n' "$label"
 }
 
-phase_policy='{"directives_map":{"main":["SecRuleEngine On","SecRequestBodyAccess On","SecRequestBodyLimit 16777216","SecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:2,phase:1,deny,status:451\"","SecRule REQUEST_BODY \"@contains body-attack\" \"id:3,phase:2,deny,status:429\"","SecRule REQUEST_URI \"@contains redirect-deny\" \"id:4,phase:1,redirect:https://example.test/blocked,status:307\"","SecRule REQUEST_URI \"@contains no-content\" \"id:5,phase:1,deny,status:204\"","SecRule REQUEST_URI \"@contains not-modified\" \"id:6,phase:1,deny,status:304\""]},"default_directives":"main"}'
+phase_policy='{"directives_map":{"main":["SecRuleEngine On","SecAuditEngine RelevantOnly","SecAuditLogFormat JSON","SecRequestBodyAccess On","SecRequestBodyLimit 16777216","SecResponseBodyAccess On","SecResponseBodyLimit 1048576","SecResponseBodyMimeType text/plain","SecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:2,phase:1,deny,status:451\"","SecRule REQUEST_BODY \"@contains body-attack\" \"id:3,phase:2,deny,status:429\"","SecRule REQUEST_URI \"@contains redirect-deny\" \"id:4,phase:1,redirect:https://example.test/blocked,status:307\"","SecRule REQUEST_URI \"@contains no-content\" \"id:5,phase:1,deny,status:204\"","SecRule REQUEST_URI \"@contains not-modified\" \"id:6,phase:1,deny,status:304\"","SecRule RESPONSE_BODY \"@contains secret\" \"id:8,phase:4,deny,status:451,auditlog,msg:'stage-d-response-audit'\"","SecRule RESPONSE_HEADERS:x-deny-response \"@streq yes\" \"id:9,phase:4,deny,status:452\"","SecRule RESPONSE_BODY \"@contains response-redirect\" \"id:10,phase:4,redirect:https://example.test/response-blocked,status:307\""] ,"off":["SecRuleEngine On","SecResponseBodyAccess Off","SecRule RESPONSE_HEADERS:x-deny-response \"@streq yes\" \"id:11,phase:4,deny,status:452\""],"head":["SecRuleEngine On","SecRule RESPONSE_HEADERS:x-upstream-secret \"@streq upstream-header-marker\" \"id:12,phase:3,deny,status:204\""],"not-modified":["SecRuleEngine On","SecRule RESPONSE_HEADERS:x-upstream-secret \"@streq upstream-header-marker\" \"id:13,phase:3,deny,status:304\""],"limit":["SecRuleEngine On","SecResponseBodyAccess On","SecResponseBodyLimit 5","SecResponseBodyLimitAction Reject","SecResponseBodyMimeType text/plain"],"stats":["SecRuleEngine Off"]},"default_directives":"main","per_authority_directives":{"off.local":"off","head.local":"head","not-modified.local":"not-modified","limit.local":"limit","stats.local":"stats"},"enable_filter_state_logs":true}'
 write_bootstrap "$phase_policy" "$temp_dir/phase-policy.yaml"
 
 cargo build --locked --release -p envoy-coraza-dynamic
@@ -170,10 +190,124 @@ if envoy_logs | grep --quiet --fixed-strings 'caught panic'; then
     fail 'default build executed the feature-gated panic probe'
 fi
 
+status=$(request "$temp_dir/telemetry-allow" http://127.0.0.1:10001/telemetry-allow)
+check_status 200 "$status" 'healthy telemetry request'
+require_access_log /telemetry-allow 'event=- rule_id=- phase=- action=- status=- reason=complete outcome=completed complete=true'
+
+before=$(backend_count /response-deny)
+status=$(request "$temp_dir/response-body-deny" --dump-header "$temp_dir/response-body-deny.headers" \
+    http://127.0.0.1:10001/response-deny)
+check_status 451 "$status" 'phase-4 response-body rule denial from the encode-body callback'
+[[ $(backend_count /response-deny) -eq $((before + 1)) ]] || fail 'response-body-deny request did not reach the backend exactly once'
+[[ $(cat "$temp_dir/response-body-deny") == 'Upstream response blocked' ]] || fail 'response-body denial leaked or changed its replacement body'
+if grep --ignore-case --quiet --extended-regexp 'x-upstream-secret|set-cookie: upstream-secret|secret upstream response' \
+    "$temp_dir/response-body-deny.headers" "$temp_dir/response-body-deny"; then
+    fail 'response-body denial leaked upstream content or headers'
+fi
+require_access_log /response-deny 'event=coraza_waf_blocked_request rule_id=8 phase=http_response_body action=deny status=451 reason=denied outcome=denied complete=true'
+audit_count=$(envoy_logs | grep --count --fixed-strings 'stage-d-response-audit' || true)
+[[ $audit_count == 1 ]] || fail "response transaction emitted the audit record $audit_count times instead of once"
+grep --ignore-case --quiet --fixed-strings 'event=coraza_waf_blocked_request rule_id=8 phase=http_response_body action=deny status=451' \
+    <(envoy_logs) || fail 'response-body interruption fields were not published before access logging'
+
+status=$(request "$temp_dir/response-denial-followup" http://127.0.0.1:10001/healthy-after-response-deny)
+check_status 200 "$status" 'healthy response after response denial'
+require_access_log /healthy-after-response-deny \
+    'event=- rule_id=- phase=- action=- status=- reason=complete outcome=completed complete=true'
+
+status=$(request "$temp_dir/response-engine-limit" --header 'Host: limit.local' \
+    --dump-header "$temp_dir/response-engine-limit.headers" http://127.0.0.1:10001/response-deny)
+check_status 500 "$status" 'engine response-body Reject status remains distinct from host 502'
+if grep --ignore-case --quiet --extended-regexp 'x-upstream-secret|set-cookie: upstream-secret|secret upstream response' \
+    "$temp_dir/response-engine-limit.headers" "$temp_dir/response-engine-limit"; then
+    fail 'engine response-body limit denial leaked upstream data'
+fi
+
 before=$(backend_count /phase1-deny)
 status=$(request "$temp_dir/phase1" http://127.0.0.1:10001/phase1-deny)
 check_status 451 "$status" 'phase-1 rule denial'
 [[ $(backend_count /phase1-deny) == "$before" ]] || fail 'phase-1 denied request reached the backend'
+
+status=$(request "$temp_dir/response-header-deny-off" --header 'Host: off.local' \
+    --dump-header "$temp_dir/response-header-deny-off.headers" http://127.0.0.1:10001/large-header-deny)
+check_status 452 "$status" 'phase-4 response-header rule with SecResponseBodyAccess Off'
+if grep --ignore-case --quiet --extended-regexp 'x-upstream-secret|LEAK-MARKER|X-Large-Probe' \
+    "$temp_dir/response-header-deny-off.headers" "$temp_dir/response-header-deny-off"; then
+    fail 'body-access-off response denial leaked upstream data'
+fi
+
+status=$(request "$temp_dir/response-mime-excluded" --dump-header "$temp_dir/response-mime-excluded.headers" \
+    http://127.0.0.1:10001/large-header-deny)
+check_status 452 "$status" 'phase-4 response-header rule for a MIME-excluded body'
+if grep --ignore-case --quiet --extended-regexp 'x-upstream-secret|LEAK-MARKER|X-Large-Probe' \
+    "$temp_dir/response-mime-excluded.headers" "$temp_dir/response-mime-excluded"; then
+    fail 'MIME-excluded response denial leaked upstream data'
+fi
+
+status=$(request "$temp_dir/response-redirect" --dump-header "$temp_dir/response-redirect.headers" \
+    http://127.0.0.1:10001/response-redirect)
+check_status 307 "$status" 'phase-4 response redirect status'
+grep --ignore-case --quiet --fixed-strings 'location: https://example.test/response-blocked' "$temp_dir/response-redirect.headers" \
+    || fail 'response redirect location was missing'
+[[ ! -s $temp_dir/response-redirect ]] || fail 'response redirect returned a body'
+
+for authority_status in 'head.local:204' 'not-modified.local:304'; do
+    authority=${authority_status%:*}
+    expected=${authority_status##*:}
+    python3 - "$authority" "$expected" <<'PY'
+import http.client
+import sys
+
+authority, expected = sys.argv[1:]
+connection = http.client.HTTPConnection("127.0.0.1", 10001, timeout=10)
+try:
+    connection.request("HEAD" if expected == "204" else "GET", "/response-deny", headers={"Host": authority})
+    response = connection.getresponse()
+    body = response.read()
+    if response.status != int(expected) or body:
+        raise RuntimeError(f"response replacement mismatch: status={response.status}, body={body!r}")
+    headers = {name.lower(): value for name, value in response.getheaders()}
+    if "x-upstream-secret" in headers or "set-cookie" in headers:
+        raise RuntimeError(f"upstream headers leaked: {headers!r}")
+finally:
+    connection.close()
+PY
+done
+
+python3 - <<'PY'
+import socket
+
+connection = socket.create_connection(("127.0.0.1", 10001), timeout=10)
+connection.sendall(b"GET /response-trailers HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+chunks = []
+while True:
+    data = connection.recv(4096)
+    if not data:
+        break
+    chunks.append(data)
+connection.close()
+response = b"".join(chunks)
+if b"HTTP/1.1 200" not in response or b"trailer response" not in response or b"x-backend-trailer: passed" not in response.lower():
+    raise RuntimeError(f"allowed response body/trailer changed: {response!r}")
+PY
+
+status=$(request "$temp_dir/response-trailer-deny" --dump-header "$temp_dir/response-trailer-deny.headers" \
+    http://127.0.0.1:10001/response-trailers-deny)
+check_status 451 "$status" 'phase-4 response denial from the response-trailers callback'
+[[ $(cat "$temp_dir/response-trailer-deny") == 'Upstream response blocked' ]] \
+    || fail 'response-trailer denial returned an unexpected body'
+if grep --ignore-case --quiet --extended-regexp 'x-upstream-secret|x-backend-trailer|upstream-trailer-marker|secret trailer response' \
+    "$temp_dir/response-trailer-deny.headers" "$temp_dir/response-trailer-deny"; then
+    fail 'response-trailer denial leaked upstream content, header, or trailer'
+fi
+
+status=$(request "$temp_dir/response-too-large" --dump-header "$temp_dir/response-too-large.headers" \
+    http://127.0.0.1:10001/large-response)
+check_status 502 "$status" 'native 1 MiB response host ceiling'
+grep --ignore-case --quiet --fixed-strings 'x-upstream-secret' "$temp_dir/response-too-large.headers" \
+    && fail 'response size failure leaked an upstream header'
+grep --quiet --fixed-strings 'z' "$temp_dir/response-too-large" \
+    && fail 'response size failure leaked the upstream body'
 
 before=$(backend_count /phase1-deny)
 python3 - <<'PY'
@@ -310,6 +444,7 @@ write_bootstrap "$engine_off_policy" "$temp_dir/engine-off.yaml"
 start_envoy "$temp_dir/engine-off.yaml"
 status=$(request "$temp_dir/engine-off" http://127.0.0.1:10001/phase1-deny)
 check_status 200 "$status" 'SecRuleEngine Off explicit uninspected pass'
+require_access_log /phase1-deny 'event=- rule_id=- phase=- action=- status=- reason=- outcome=- complete=-'
 "${compose[@]}" down --volumes >/dev/null
 
 unmatched_policy='{"directives_map":{"protected":["SecRuleEngine On","SecRule REQUEST_URI \"@contains phase1-deny\" \"id:5,phase:1,deny,status:451\""]},"per_authority_directives":{"protected.test":"protected"}}'
@@ -353,17 +488,45 @@ invalid_utf8_config="$temp_dir/invalid-utf8.yaml"
 write_bootstrap '__INVALID_UTF8__' "$invalid_utf8_config"
 expect_startup_rejection malformed-utf8 "$invalid_utf8_config"
 
+"${compose[@]}" down --volumes >/dev/null
+crs_policy='{"directives_map":{"crs":["SecRuleEngine On","SecAuditEngine RelevantOnly","SecAuditLogFormat JSON","SecRequestBodyAccess On","SecRequestBodyLimit 13107200","SecResponseBodyAccess On","SecResponseBodyLimit 1048576","SecResponseBodyMimeType text/plain text/html application/json","Include crs/crs-setup.conf","Include crs/rules/*.conf","SecRule REQUEST_HEADERS:Content-Type \"@rx ^application/json(?:\\s*;.*)?$\" \"id:999100,phase:1,pass,nolog,t:none,t:lowercase,ctl:requestBodyProcessor=JSON\""]},"per_authority_directives":{"crs.local":"crs"},"enable_filter_state_logs":true}'
+write_bootstrap "$crs_policy" "$temp_dir/crs-policy.yaml"
+cargo build --locked --release -p envoy-coraza-dynamic --features embed-crs --target-dir "$crs_target_dir"
+cp "$crs_target_dir/release/libenvoy_coraza_dynamic.so" "$crs_module_file"
+export ENVOY_CORAZA_DYNAMIC_MODULE="target/$crs_module_name"
+"${compose[@]}" build envoy
+start_envoy "$temp_dir/crs-policy.yaml"
+
+before=$(backend_count /crs-sqli)
+status=$(request "$temp_dir/crs-sqli" --header 'Host: crs.local' \
+    'http://127.0.0.1:10001/crs-sqli?q=1%27%20OR%201%3D1')
+check_status 403 "$status" 'embedded CRS SQL injection denial'
+[[ $(backend_count /crs-sqli) == "$before" ]] || fail 'CRS SQL injection reached the backend'
+envoy_logs | grep --quiet --fixed-strings '949110' || fail 'CRS SQL injection was not denied by rule 949110'
+
+status=$(request "$temp_dir/crs-benign" --header 'Host: crs.local' http://127.0.0.1:10001/healthy)
+check_status 200 "$status" 'embedded CRS benign request'
+
 cargo build --locked --release -p envoy-coraza-dynamic --features panic-probe --target-dir "$panic_target_dir"
 cp "$panic_target_dir/release/libenvoy_coraza_dynamic.so" "$panic_module_file"
 export ENVOY_CORAZA_DYNAMIC_MODULE="target/$panic_module_name"
 "${compose[@]}" build envoy
-write_bootstrap '{}' "$temp_dir/panic.yaml"
+panic_policy='{"directives_map":{"p":["SecRuleEngine On","SecRequestBodyAccess On","SecRequestBodyLimit 16777216","SecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"","SecResponseBodyAccess On","SecResponseBodyLimit 1048576","SecResponseBodyMimeType text/plain"]},"default_directives":"p"}'
+write_bootstrap "$panic_policy" "$temp_dir/panic.yaml"
 start_envoy "$temp_dir/panic.yaml"
 before=$(backend_count /panic)
 status=$(request "$temp_dir/panic" --header 'x-coraza-probe: panic' http://127.0.0.1:10001/panic)
 check_status 500 "$status" 'feature-gated request panic fail-closed response'
 [[ $(backend_count /panic) == "$before" ]] || fail 'panicking request reached the backend'
+
+response_panic_status=$(curl --silent --output "$temp_dir/response-panic" --write-out '%{http_code}' \
+    --max-time 10 --header 'x-coraza-probe: panic-response' --request POST \
+    --data-binary 'retained request body' http://127.0.0.1:10001/response-deny || true)
+[[ $response_panic_status == 000 ]] || fail "response panic returned HTTP $response_panic_status instead of resetting the stream"
+envoy_logs | grep --quiet --fixed-strings 'caught panic: feature-gated response panic probe' \
+    || fail 'response callback panic was not caught and reset'
+
 status=$(request "$temp_dir/panic-followup" http://127.0.0.1:10001/healthy)
-check_status 200 "$status" 'healthy request after request panic'
+check_status 200 "$status" 'healthy request after request and response panics'
 
 printf 'Envoy 1.40 native request-enforcement checks passed\n'

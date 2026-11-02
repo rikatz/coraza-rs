@@ -16,7 +16,9 @@
 
 /// SDK ABI entry point and filter-configuration factory.
 mod abi;
-/// Request-side policy selection, body gating and enforcement.
+/// Bounded native Envoy filter-state and diagnostic publication.
+mod observability;
+/// Request/response policy selection, body gating and enforcement.
 mod stream;
 #[cfg(test)]
 /// Minimal logging imports needed by the native unit-test linker.

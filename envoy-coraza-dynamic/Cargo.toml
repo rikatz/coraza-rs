@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 
 [features]
 panic-probe = []
+embed-crs = ["envoy-coraza-common/embed-crs"]
 
 [dependencies]
 coraza = { path = "../coraza" }

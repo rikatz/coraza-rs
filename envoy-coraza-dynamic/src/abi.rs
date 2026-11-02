@@ -14,24 +14,29 @@
 
 //! Native dynamic-module ABI and HTTP filter factory.
 
-use std::sync::Arc;
-
-use coraza::{
-    audit_log::{AuditLog, MatchedRule},
-    types::AuditLogFormat,
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
+
 use envoy_coraza_common::{
     config::{Config, MAX_CONFIGURATION_BYTES},
-    observability::{bounded, sanitize_audit, Diagnostics, MAX_AUDIT_LOG_BYTES, MAX_ERROR_LOG_BYTES},
+    observability::Diagnostics,
     policy::Generation,
 };
 use envoy_proxy_dynamic_modules_rust_sdk::{
     declare_init_functions, EnvoyHttpFilter, EnvoyHttpFilterConfig, HttpFilterConfig,
 };
 
-use crate::stream::FilterConfig;
+use crate::{
+    observability::{self, EnvoyDebugLogger},
+    stream::FilterConfig,
+};
 
 declare_init_functions!(init, new_http_filter_config_fn);
+
+/// Next ID assigned to successfully compiled native policy generations.
+static NEXT_GENERATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Reports successful process initialization; policy state belongs to configurations.
 fn init() -> bool {
@@ -70,20 +75,12 @@ fn compile_config(filter_name: &str, config_bytes: &[u8]) -> Option<FilterConfig
         },
     };
     let diagnostics = Arc::new(Diagnostics::default());
-    let generation = match Generation::compile(
+    let mut generation = match Generation::compile_with_debug_logger(
         config,
         Arc::clone(&diagnostics),
-        |matched: &MatchedRule| {
-            let message = bounded(&matched.error_log(), MAX_ERROR_LOG_BYTES);
-            envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!("{message}");
-        },
-        |entry: &AuditLog, format: AuditLogFormat| {
-            let (formatted, truncated) = entry.format_bounded(format, MAX_AUDIT_LOG_BYTES);
-            if !formatted.is_empty() {
-                let message = sanitize_audit(&formatted, MAX_AUDIT_LOG_BYTES, truncated);
-                envoy_proxy_dynamic_modules_rust_sdk::envoy_log_critical!("{message}");
-            }
-        },
+        observability::error_log,
+        observability::audit_log,
+        Arc::new(EnvoyDebugLogger),
     ) {
         Ok(generation) => generation,
         Err(error) => {
@@ -91,6 +88,15 @@ fn compile_config(filter_name: &str, config_bytes: &[u8]) -> Option<FilterConfig
             return None;
         },
     };
+    let Some(generation_id) = NEXT_GENERATION_ID
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
+        .ok()
+        .and_then(|current| current.checked_add(1))
+    else {
+        envoy_proxy_dynamic_modules_rust_sdk::envoy_log_error!("envoy-coraza-dynamic: generation id exhausted");
+        return None;
+    };
+    generation.set_id(generation_id);
     for warning in generation.warnings() {
         envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!("{warning}");
     }

@@ -45,18 +45,33 @@ func (b *backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Secret", "upstream-header-marker")
 		w.Header().Set("Set-Cookie", "upstream-secret=secret-cookie")
 		writeBody(w, []byte("secret upstream response body"))
+	case r.URL.Path == "/response-redirect":
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Upstream-Secret", "upstream-header-marker")
+		writeBody(w, []byte("response-redirect"))
 	case r.URL.Path == "/response-trailers":
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Add("Trailer", "X-Backend-Trailer")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("trailer response"))
 		w.Header().Set("X-Backend-Trailer", "passed")
+	case r.URL.Path == "/response-trailers-deny":
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Upstream-Secret", "upstream-header-marker")
+		w.Header().Add("Trailer", "X-Backend-Trailer")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("secret trailer response"))
+		w.Header().Set("X-Backend-Trailer", "upstream-trailer-marker")
 	case r.URL.Path == "/empty":
 		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(http.StatusOK)
 	case r.URL.Path == "/large-uninspectable":
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-Large-Probe", "preserved")
+		writeBody(w, bytes.Repeat([]byte{'z'}, largeBodySize))
+	case r.URL.Path == "/large-response":
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Upstream-Secret", "upstream-header-marker")
 		writeBody(w, bytes.Repeat([]byte{'z'}, largeBodySize))
 	case r.URL.Path == "/large-header-deny":
 		w.Header().Set("Content-Type", "application/octet-stream")

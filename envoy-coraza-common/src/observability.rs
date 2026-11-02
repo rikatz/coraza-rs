@@ -60,6 +60,113 @@ pub enum InterruptionPhase {
     ResponseBody,
 }
 
+/// Terminal or explicitly incomplete result retained for filter-state publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalOutcome {
+    /// No configured policy matched; traffic continued uninspected.
+    UnmatchedAuthority,
+    /// The selected policy has `SecRuleEngine Off`.
+    EngineOff,
+    /// The request or response used an unsupported feature.
+    Unsupported(&'static str),
+    /// A WAF rule interrupted a request or response.
+    Denied {
+        /// Request/response phase that denied the message.
+        phase: &'static str,
+        /// Rule-selected response status.
+        status: u16,
+    },
+    /// An incomplete body was rejected.
+    Incomplete {
+        /// Inspection boundary that could not be completed.
+        phase: &'static str,
+        /// Connector failure status.
+        status: u16,
+    },
+    /// A host or policy body ceiling was reached.
+    BodyTooLarge {
+        /// Body boundary that exceeded its host ceiling.
+        phase: &'static str,
+        /// Connector status for the size failure.
+        status: u16,
+    },
+    /// Coraza processed the configured prefix and allowed the request to continue.
+    BodyPartiallyInspected {
+        /// Body phase whose configured engine limit allowed a prefix.
+        phase: &'static str,
+    },
+    /// The module-wide retained-body cap was exhausted.
+    RetainedBodyBudgetExhausted {
+        /// Body phase unable to reserve module-wide retained memory.
+        phase: &'static str,
+    },
+    /// A callback sequence or host response made inspection impossible.
+    InvalidLifecycle {
+        /// Callback boundary whose ordering was invalid.
+        phase: &'static str,
+        /// Connector failure status.
+        status: u16,
+    },
+    /// The request authority was invalid.
+    InvalidAuthority {
+        /// Request status for invalid authority.
+        status: u16,
+    },
+    /// The stream ended before a complete response; the host did not report the cause.
+    UpstreamFailureOrCancellation,
+    /// The transaction reached a complete response.
+    Completed,
+}
+
+impl TerminalOutcome {
+    /// Closed inspection-reason value for compatibility filter state.
+    pub fn inspection_reason(&self) -> &'static str {
+        match self {
+            Self::UnmatchedAuthority => "unmatched_authority",
+            Self::EngineOff => "engine_off",
+            Self::Unsupported(_) => "unsupported",
+            Self::Denied { .. } => "denied",
+            Self::Incomplete { .. } => "incomplete",
+            Self::BodyTooLarge { .. } => "body_too_large",
+            Self::BodyPartiallyInspected { .. } => "body_partially_inspected",
+            Self::RetainedBodyBudgetExhausted { .. } => "retained_body_budget_exhausted",
+            Self::InvalidLifecycle { .. } => "invalid_lifecycle",
+            Self::InvalidAuthority { .. } => "invalid_authority",
+            Self::UpstreamFailureOrCancellation => "upstream_failure_or_cancellation",
+            Self::Completed => "complete",
+        }
+    }
+
+    /// Closed terminal outcome value for compatibility filter state.
+    pub fn terminal_name(&self) -> &'static str {
+        match self {
+            Self::UnmatchedAuthority | Self::EngineOff => "uninspected",
+            Self::Unsupported(_) => "unsupported",
+            Self::Denied { .. } => "denied",
+            Self::Incomplete { .. } | Self::BodyPartiallyInspected { .. } => "incomplete",
+            Self::BodyTooLarge { .. }
+            | Self::RetainedBodyBudgetExhausted { .. }
+            | Self::InvalidLifecycle { .. }
+            | Self::InvalidAuthority { .. } => "error",
+            Self::UpstreamFailureOrCancellation => "upstream_failure_or_cancellation",
+            Self::Completed => "completed",
+        }
+    }
+
+    /// Whether the outcome denotes an inspection or host error.
+    pub fn is_error(&self) -> bool {
+        matches!(
+            self,
+            Self::Incomplete { .. }
+                | Self::BodyTooLarge { .. }
+                | Self::RetainedBodyBudgetExhausted { .. }
+                | Self::InvalidLifecycle { .. }
+                | Self::InvalidAuthority { .. }
+                | Self::UpstreamFailureOrCancellation
+        )
+    }
+}
+
 impl InterruptionPhase {
     /// Returns the legacy filter-state value for this phase.
     pub fn state(self) -> &'static str {

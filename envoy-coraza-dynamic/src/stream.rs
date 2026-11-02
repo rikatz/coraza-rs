@@ -38,6 +38,7 @@ use envoy_coraza_common::{
         authority_host, find_header, has_unsupported_content_encoding, has_upgrade, headers_within_limits,
         normalize_authority, request_authority, MAX_HEADERS_BYTES, MAX_HEADER_COUNT, MAX_HEADER_VALUE_BYTES,
     },
+    observability::{HealthState, InterruptionPhase, TerminalOutcome},
     policy::{Generation, Policy},
 };
 use envoy_proxy_dynamic_modules_rust_sdk::{
@@ -47,6 +48,9 @@ use envoy_proxy_dynamic_modules_rust_sdk::{
         envoy_dynamic_module_type_on_http_filter_request_body_status as RequestBodyStatus,
         envoy_dynamic_module_type_on_http_filter_request_headers_status as RequestHeadersStatus,
         envoy_dynamic_module_type_on_http_filter_request_trailers_status as RequestTrailersStatus,
+        envoy_dynamic_module_type_on_http_filter_response_body_status as ResponseBodyStatus,
+        envoy_dynamic_module_type_on_http_filter_response_headers_status as ResponseHeadersStatus,
+        envoy_dynamic_module_type_on_http_filter_response_trailers_status as ResponseTrailersStatus,
     },
     CatchUnwind, EnvoyBuffer, EnvoyHttpFilter, HttpFilter,
 };
@@ -54,6 +58,7 @@ use envoy_proxy_dynamic_modules_rust_sdk::{
 /// Hard request body bound, independent of SecLang controls and Envoy limits.
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES_U64: u64 = 16 * 1024 * 1024;
+const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 /// Aggregate retained body bytes shared by the loaded native module.
 const MAX_RETAINED_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Process-wide for this loaded module, across filter configs, generations and workers.
@@ -61,6 +66,8 @@ static RETAINED_BODY_BYTES: AtomicUsize = AtomicUsize::new(0);
 const EMPTY_BODY: &[u8] = b"";
 const REQUEST_DENY_BODY: &[u8] = b"Request denied\n";
 const REQUEST_ERROR_BODY: &[u8] = b"Request inspection unavailable\n";
+const RESPONSE_DENY_BODY: &[u8] = b"Upstream response blocked\n";
+const RESPONSE_ERROR_BODY: &[u8] = b"Response inspection unavailable\n";
 const UNSUPPORTED_BODY: &[u8] = b"Request feature is not supported\n";
 
 type OwnedHeaders = Vec<(String, Vec<u8>)>;
@@ -96,15 +103,39 @@ enum Stage {
     Terminal,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent request/response access, completion, truncation, and telemetry facts span callbacks."
+)]
 struct StreamState {
     generation: Arc<Generation>,
     stage: Stage,
     transaction: Option<Box<Transaction>>,
     method: String,
+    protocol: String,
     body_access: bool,
     phase2_done: bool,
     body_bytes: usize,
+    response_stage: ResponseStage,
+    response_body_bytes: usize,
+    response_body_access: bool,
+    response_body_processable: bool,
+    #[cfg(feature = "panic-probe")]
+    response_panic_probe: bool,
+    finalized: bool,
+    request_body_truncated: bool,
+    response_body_truncated: bool,
+    telemetry_publish_failed: bool,
+    outcome: Option<TerminalOutcome>,
     reservation: BodyReservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseStage {
+    Waiting,
+    Headers,
+    Body,
+    Complete,
 }
 
 impl StreamState {
@@ -114,11 +145,51 @@ impl StreamState {
             stage: Stage::New,
             transaction: None,
             method: String::new(),
+            protocol: String::new(),
             body_access: false,
             phase2_done: false,
             body_bytes: 0,
+            response_stage: ResponseStage::Waiting,
+            response_body_bytes: 0,
+            response_body_access: false,
+            response_body_processable: false,
+            #[cfg(feature = "panic-probe")]
+            response_panic_probe: false,
+            finalized: false,
+            request_body_truncated: false,
+            response_body_truncated: false,
+            telemetry_publish_failed: false,
+            outcome: None,
             reservation: BodyReservation::default(),
         }
+    }
+
+    fn finish(&mut self, fallback: TerminalOutcome) -> Option<(TerminalOutcome, bool)> {
+        if self.finalized {
+            return None;
+        }
+        self.finalized = true;
+        let outcome = match self.outcome.take() {
+            Some(outcome) => outcome,
+            None => fallback,
+        };
+        if let Some(transaction) = self.transaction.as_deref() {
+            self.request_body_truncated |= transaction.request_body_stats().truncated;
+            self.response_body_truncated |= transaction.response_body_stats().truncated;
+        }
+        let failed = self
+            .transaction
+            .as_deref_mut()
+            .is_some_and(|transaction| transaction.finish().is_err());
+        self.transaction.take();
+        let _ = self.reservation.resize(0);
+        Some((outcome, failed))
+    }
+}
+
+impl Drop for StreamState {
+    fn drop(&mut self) {
+        let _ = self.finish(TerminalOutcome::UpstreamFailureOrCancellation);
     }
 }
 
@@ -188,16 +259,86 @@ enum BodyAction {
     Buffer,
 }
 
+struct ResponseReply {
+    status: u16,
+    body: &'static [u8],
+    details: &'static str,
+    head: bool,
+    redirect: bool,
+    location: Option<Vec<u8>>,
+    interruption_fields: Option<Vec<(String, String)>>,
+}
+
+impl ResponseReply {
+    fn failure(status: u16, _phase: &'static str, head: bool) -> Self {
+        Self {
+            status,
+            body: RESPONSE_ERROR_BODY,
+            details: "coraza_dynamic_response_error",
+            head,
+            redirect: false,
+            location: None,
+            interruption_fields: None,
+        }
+    }
+
+    fn interruption(state: &mut StreamState, interruption: &Interruption, phase: InterruptionPhase) -> Self {
+        let status = valid_status(interruption.status);
+        let redirect = interruption.action == "redirect";
+        let head = state.method.eq_ignore_ascii_case("HEAD");
+        let fields = state
+            .generation
+            .enable_filter_state_logs()
+            .then(|| {
+                state
+                    .transaction
+                    .as_deref()
+                    .map(|tx| crate::observability::interruption_fields(tx, interruption, phase))
+            })
+            .flatten();
+        state.stage = Stage::Terminal;
+        state.response_stage = ResponseStage::Complete;
+        state.outcome = Some(TerminalOutcome::Denied {
+            phase: match phase {
+                InterruptionPhase::ResponseHeaders => "response-headers",
+                InterruptionPhase::ResponseBody => "response-body",
+                InterruptionPhase::RequestHeaders => "request-headers",
+                InterruptionPhase::RequestBody => "request-body",
+            },
+            status,
+        });
+        Self {
+            status,
+            body: if redirect { EMPTY_BODY } else { RESPONSE_DENY_BODY },
+            details: "coraza_dynamic_response_denied",
+            head,
+            redirect,
+            location: (redirect && !interruption.data.is_empty()).then(|| interruption.data.as_bytes().to_vec()),
+            interruption_fields: fields,
+        }
+    }
+
+    fn body(&self) -> &'static [u8] {
+        if self.head || matches!(self.status, 204 | 304) {
+            EMPTY_BODY
+        } else {
+            self.body
+        }
+    }
+}
+
 /// One request stream, pinning the generation selected when Envoy creates it.
 pub(crate) struct RequestFilter {
-    state: RefCell<StreamState>,
+    generation: Arc<Generation>,
+    state: RefCell<Option<StreamState>>,
     terminal: Cell<bool>,
 }
 
 impl RequestFilter {
     fn new(generation: Arc<Generation>) -> Self {
         Self {
-            state: RefCell::new(StreamState::new(generation)),
+            generation,
+            state: RefCell::new(None),
             terminal: Cell::new(false),
         }
     }
@@ -205,23 +346,32 @@ impl RequestFilter {
     fn reject(&self, envoy: &mut impl EnvoyHttpFilter, status: u16, body: &'static [u8]) {
         self.terminal.set(true);
         if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.stage = Stage::Terminal;
+            if let Some(state) = state.as_mut() {
+                state.stage = Stage::Terminal;
+                state.outcome = Some(TerminalOutcome::Incomplete {
+                    phase: "request-inspection",
+                    status,
+                });
+            }
         }
+        let is_head = self.is_head();
         envoy.send_response(
             u32::from(status),
             &[
                 ("content-type", b"text/plain; charset=utf-8"),
                 ("cache-control", b"no-store"),
             ],
-            Some(if self.is_head() { EMPTY_BODY } else { body }),
+            Some(if is_head { EMPTY_BODY } else { body }),
             Some("coraza_dynamic_request_error"),
         );
     }
 
     fn is_head(&self) -> bool {
-        self.state
-            .try_borrow()
-            .is_ok_and(|state| state.method.eq_ignore_ascii_case("HEAD"))
+        self.state.try_borrow().is_ok_and(|state| {
+            state
+                .as_ref()
+                .is_some_and(|state| state.method.eq_ignore_ascii_case("HEAD"))
+        })
     }
 
     fn send_interruption(&self, envoy: &mut impl EnvoyHttpFilter, interruption: &Interruption) {
@@ -229,6 +379,21 @@ impl RequestFilter {
         let redirect = interruption.action == "redirect";
         let no_body_status = matches!(status, 204 | 304);
         let head = self.is_head();
+        let fields = self.state.try_borrow().ok().and_then(|slot| {
+            let state = slot.as_ref()?;
+            if !state.generation.enable_filter_state_logs() {
+                return None;
+            }
+            let phase = if state.phase2_done {
+                InterruptionPhase::RequestBody
+            } else {
+                InterruptionPhase::RequestHeaders
+            };
+            state
+                .transaction
+                .as_deref()
+                .map(|transaction| crate::observability::interruption_fields(transaction, interruption, phase))
+        });
         let mut headers: Vec<(&str, &[u8])> = vec![
             ("content-type", b"text/plain; charset=utf-8"),
             ("cache-control", b"no-store"),
@@ -238,7 +403,24 @@ impl RequestFilter {
         }
         self.terminal.set(true);
         if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.stage = Stage::Terminal;
+            if let Some(state) = state.as_mut() {
+                state.stage = Stage::Terminal;
+                state.outcome = Some(TerminalOutcome::Denied {
+                    phase: "request",
+                    status,
+                });
+            }
+        }
+        if let Some(fields) = fields {
+            let failed = crate::observability::publish_interruption(envoy, &fields);
+            if failed {
+                if let Ok(mut state) = self.state.try_borrow_mut() {
+                    if let Some(state) = state.as_mut() {
+                        state.telemetry_publish_failed = true;
+                        state.generation.diagnostics().record_failure();
+                    }
+                }
+            }
         }
         envoy.send_response(
             u32::from(status),
@@ -260,10 +442,11 @@ impl RequestFilter {
     }
 
     fn on_headers(&self, envoy: &mut impl EnvoyHttpFilter, end_of_stream: bool) -> Result<HeadersAction, Reply> {
-        let mut state = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
+        let mut slot = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
             status: 503,
             body: REQUEST_ERROR_BODY,
         })?;
+        let state = slot.get_or_insert_with(|| StreamState::new(Arc::clone(&self.generation)));
         if state.stage != Stage::New {
             return Err(Reply::Status {
                 status: 503,
@@ -280,6 +463,8 @@ impl RequestFilter {
                 body: REQUEST_ERROR_BODY,
             });
         }
+        #[cfg(feature = "panic-probe")]
+        check_panic_probe(state, &headers);
         let fallback_authority = attribute_bytes(envoy, AttributeId::RequestHost);
         let raw_authority = request_authority(&headers, fallback_authority.as_deref());
         let scheme = find_header(&headers, ":scheme")
@@ -295,6 +480,7 @@ impl RequestFilter {
         let generation = Arc::clone(&state.generation);
         let Some((_name, policy)) = generation.select_named(&authority) else {
             state.stage = Stage::Bypassed;
+            state.outcome = Some(TerminalOutcome::UnmatchedAuthority);
             envoy_proxy_dynamic_modules_rust_sdk::envoy_log_warn!(
                 "envoy-coraza-dynamic: no authority policy matched; request passed uninspected"
             );
@@ -307,6 +493,7 @@ impl RequestFilter {
             });
         };
         state.method.clone_from(&metadata.method);
+        state.protocol.clone_from(&metadata.protocol);
         let (transaction, interruption) = create_transaction(envoy, policy, &authority, &headers, &metadata);
         state.body_access = transaction.request_body_access();
         state.transaction = Some(transaction);
@@ -319,6 +506,7 @@ impl RequestFilter {
             .is_some_and(|tx| tx.rule_engine() == RuleEngineStatus::Off)
         {
             state.stage = Stage::Bypassed;
+            state.outcome = Some(TerminalOutcome::EngineOff);
             return Ok(HeadersAction::Continue);
         }
         if metadata.method.eq_ignore_ascii_case("CONNECT") || has_upgrade(&headers) {
@@ -344,7 +532,7 @@ impl RequestFilter {
         }
         state.phase2_done = true;
         state.stage = Stage::Complete;
-        let result = phase2(&mut state, EMPTY_BODY);
+        let result = phase2(state, EMPTY_BODY);
         let retained = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
         if !state.reservation.resize(retained) {
             return Err(Reply::Status {
@@ -356,10 +544,13 @@ impl RequestFilter {
     }
 
     fn on_body(&self, envoy: &mut impl EnvoyHttpFilter, end_of_stream: bool) -> Result<BodyAction, Reply> {
-        let mut state = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
+        let mut slot = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
             status: 503,
             body: REQUEST_ERROR_BODY,
         })?;
+        let Some(state) = slot.as_mut() else {
+            return Ok(BodyAction::Continue);
+        };
         if self.terminal.get() || matches!(state.stage, Stage::Bypassed | Stage::Complete | Stage::Terminal) {
             return Ok(BodyAction::Continue);
         }
@@ -417,14 +608,20 @@ impl RequestFilter {
             status: 503,
             body: REQUEST_ERROR_BODY,
         })?;
-        drop(state);
-        let mut state = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
+        drop(slot);
+        let mut slot = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
             status: 503,
             body: REQUEST_ERROR_BODY,
         })?;
+        let Some(state) = slot.as_mut() else {
+            return Err(Reply::Status {
+                status: 503,
+                body: REQUEST_ERROR_BODY,
+            });
+        };
         state.phase2_done = true;
         state.stage = Stage::Complete;
-        let result = phase2(&mut state, &body);
+        let result = phase2(state, &body);
         drop(body);
         let retained = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
         let host_and_engine = state.body_bytes.checked_add(retained);
@@ -438,10 +635,13 @@ impl RequestFilter {
     }
 
     fn on_trailers(&self, envoy: &mut impl EnvoyHttpFilter) -> Result<(), Reply> {
-        let mut state = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
+        let mut slot = self.state.try_borrow_mut().map_err(|_error| Reply::Status {
             status: 503,
             body: REQUEST_ERROR_BODY,
         })?;
+        let Some(state) = slot.as_mut() else {
+            return Ok(());
+        };
         if self.terminal.get() || matches!(state.stage, Stage::Bypassed | Stage::Terminal) {
             return Ok(());
         }
@@ -494,7 +694,7 @@ impl RequestFilter {
         })?;
         state.phase2_done = true;
         state.stage = Stage::Complete;
-        let result = phase2(&mut state, &body);
+        let result = phase2(state, &body);
         drop(body);
         let retained = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
         let host_and_engine = state.body_bytes.max(body_size).checked_add(retained);
@@ -507,19 +707,364 @@ impl RequestFilter {
         state.body_bytes = body_size;
         result
     }
+
+    fn response_headers(
+        &self,
+        envoy: &mut impl EnvoyHttpFilter,
+        end_of_stream: bool,
+    ) -> Result<ResponseHeadersStatus, ResponseReply> {
+        let mut slot = self
+            .state
+            .try_borrow_mut()
+            .map_err(|_error| ResponseReply::failure(502, "response-state-borrow", false))?;
+        let Some(state) = slot.as_mut() else {
+            return Ok(ResponseHeadersStatus::Continue);
+        };
+        if self.terminal.get() || matches!(state.stage, Stage::Bypassed | Stage::Terminal) {
+            return Ok(ResponseHeadersStatus::Continue);
+        }
+        if state.transaction.is_none() {
+            return Ok(ResponseHeadersStatus::Continue);
+        }
+        if state.stage != Stage::Complete || state.response_stage != ResponseStage::Waiting {
+            return Err(Self::response_failure(state, 502, "response-headers-order"));
+        }
+        let headers = copy_headers(envoy.get_response_headers())
+            .map_err(|_error| Self::response_failure(state, 502, "response-headers"))?;
+        if !headers_within_limits(&headers, headers.len()) {
+            return Err(Self::response_failure(state, 502, "response-headers"));
+        }
+        let status = find_header(&headers, ":status")
+            .and_then(|value| str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or_else(|| Self::response_failure(state, 502, "response-status"))?;
+        if (100..200).contains(&status) && status != 101 {
+            return Ok(ResponseHeadersStatus::Continue);
+        }
+        if status == 101 {
+            let mut reply = Self::response_failure(state, 501, "response-upgrade");
+            reply.body = UNSUPPORTED_BODY;
+            reply.details = "coraza_dynamic_response_unsupported";
+            state.outcome = Some(TerminalOutcome::Unsupported("response-upgrade"));
+            return Err(reply);
+        }
+        for (name, value) in &headers {
+            if let Some(transaction) = state.transaction.as_mut() {
+                transaction.add_response_header(name, value);
+            }
+        }
+        let interruption = state
+            .transaction
+            .as_mut()
+            .and_then(|transaction| transaction.process_response_headers(status, &state.protocol));
+        if let Some(interruption) = interruption {
+            return Err(ResponseReply::interruption(
+                state,
+                &interruption,
+                InterruptionPhase::ResponseHeaders,
+            ));
+        }
+        let Some(transaction) = state.transaction.as_deref() else {
+            return Err(Self::response_failure(state, 502, "response-transaction-missing"));
+        };
+        state.response_body_access = transaction.response_body_access();
+        state.response_body_processable = transaction.is_response_body_processable();
+        if state.response_body_access && state.response_body_processable && has_unsupported_content_encoding(&headers) {
+            return Err(Self::response_failure(state, 502, "response-content-encoding"));
+        }
+        state.response_stage = ResponseStage::Headers;
+        if end_of_stream || !(state.response_body_access && state.response_body_processable) {
+            state.response_stage = ResponseStage::Complete;
+            let interruption = state
+                .transaction
+                .as_mut()
+                .and_then(|transaction| transaction.process_response_body(EMPTY_BODY));
+            if let Some(interruption) = interruption {
+                return Err(ResponseReply::interruption(
+                    state,
+                    &interruption,
+                    InterruptionPhase::ResponseBody,
+                ));
+            }
+            if state
+                .transaction
+                .as_deref()
+                .is_some_and(Transaction::inspection_incomplete)
+            {
+                return Err(Self::response_failure(state, 502, "response-body-inspection"));
+            }
+            state.response_body_truncated = state
+                .transaction
+                .as_ref()
+                .is_some_and(|transaction| transaction.response_body_stats().truncated);
+            if state.response_body_truncated {
+                state.outcome = Some(TerminalOutcome::BodyPartiallyInspected { phase: "response-body" });
+            }
+            return Ok(ResponseHeadersStatus::Continue);
+        }
+        let current_limit = envoy.get_buffer_limit();
+        if current_limit == 0 || current_limit > MAX_RESPONSE_BODY_BYTES as u64 {
+            envoy.set_buffer_limit(MAX_RESPONSE_BODY_BYTES as u64);
+        }
+        Ok(ResponseHeadersStatus::StopIteration)
+    }
+
+    fn response_body(&self, envoy: &mut impl EnvoyHttpFilter, end_of_stream: bool) -> ResponseBodyStatus {
+        if self.terminal.get() {
+            return ResponseBodyStatus::Continue;
+        }
+        let result = (|| {
+            let mut slot = self
+                .state
+                .try_borrow_mut()
+                .map_err(|_error| ResponseReply::failure(502, "response-state-borrow", false))?;
+            let Some(state) = slot.as_mut() else {
+                return Ok(None);
+            };
+            if matches!(state.stage, Stage::Bypassed | Stage::Terminal)
+                || state.response_stage == ResponseStage::Complete
+                || !state.response_body_access
+                || !state.response_body_processable
+            {
+                return Ok(None);
+            }
+            if !matches!(state.response_stage, ResponseStage::Headers | ResponseStage::Body) {
+                return Err(Self::response_failure(state, 502, "response-body-order"));
+            }
+            let received_buffered = envoy.received_buffered_response_body();
+            let received_size = envoy.get_received_response_body_size();
+            let buffered_size = envoy.get_buffered_response_body_size();
+            let body_size = if received_buffered {
+                buffered_size
+            } else {
+                buffered_size
+                    .checked_add(received_size)
+                    .ok_or_else(|| Self::response_failure(state, 502, "response-body-size-overflow"))?
+            };
+            if body_size < state.response_body_bytes {
+                return Err(Self::response_failure(state, 502, "response-body-size-regressed"));
+            }
+            if body_size > MAX_RESPONSE_BODY_BYTES {
+                return Err(Self::response_failure(state, 502, "response-body-limit"));
+            }
+            if !Self::reserve_response_body(state, body_size, end_of_stream) {
+                return Err(Self::response_failure(state, 502, "response-body-admission"));
+            }
+            state.response_body_bytes = body_size;
+            state.response_stage = if end_of_stream {
+                ResponseStage::Complete
+            } else {
+                ResponseStage::Body
+            };
+            if !end_of_stream {
+                return Ok(Some(ResponseBodyStatus::StopIterationAndBuffer));
+            }
+            let body = copy_terminal_response_body(envoy, received_buffered, body_size, false)
+                .ok_or_else(|| Self::response_failure(state, 502, "response-body-buffer"))?;
+            let interruption = state
+                .transaction
+                .as_mut()
+                .and_then(|transaction| transaction.process_response_body(&body));
+            drop(body);
+            if let Some(interruption) = interruption {
+                return Err(ResponseReply::interruption(
+                    state,
+                    &interruption,
+                    InterruptionPhase::ResponseBody,
+                ));
+            }
+            if state
+                .transaction
+                .as_deref()
+                .is_some_and(Transaction::inspection_incomplete)
+            {
+                return Err(Self::response_failure(state, 502, "response-body-inspection"));
+            }
+            state.response_body_truncated = state
+                .transaction
+                .as_ref()
+                .is_some_and(|transaction| transaction.response_body_stats().truncated);
+            if state.response_body_truncated {
+                state.outcome = Some(TerminalOutcome::BodyPartiallyInspected { phase: "response-body" });
+            }
+            let retained = state
+                .transaction
+                .as_ref()
+                .map_or(0, |transaction| transaction.body_memory_bytes());
+            let target = state.body_bytes.checked_add(retained);
+            if !target.is_some_and(|target| state.reservation.resize(target)) {
+                return Err(Self::response_failure(state, 502, "response-body-retention"));
+            }
+            Ok(Some(ResponseBodyStatus::Continue))
+        })();
+        match result {
+            Ok(Some(status)) => status,
+            Ok(None) => ResponseBodyStatus::Continue,
+            Err(reply) => {
+                self.send_response_reply(envoy, &reply);
+                ResponseBodyStatus::StopIterationNoBuffer
+            },
+        }
+    }
+
+    fn response_trailers(&self, envoy: &mut impl EnvoyHttpFilter) -> ResponseTrailersStatus {
+        if self.terminal.get() {
+            return ResponseTrailersStatus::Continue;
+        }
+        let result = (|| {
+            let mut slot = self
+                .state
+                .try_borrow_mut()
+                .map_err(|_error| ResponseReply::failure(502, "response-state-borrow", false))?;
+            let Some(state) = slot.as_mut() else {
+                return Ok(());
+            };
+            if matches!(state.stage, Stage::Bypassed | Stage::Terminal)
+                || state.response_stage == ResponseStage::Complete
+                || !state.response_body_access
+                || !state.response_body_processable
+            {
+                return Ok(());
+            }
+            if !matches!(state.response_stage, ResponseStage::Headers | ResponseStage::Body) {
+                return Err(Self::response_failure(state, 502, "response-trailers-order"));
+            }
+            let trailers = copy_headers(envoy.get_response_trailers())
+                .map_err(|_error| Self::response_failure(state, 502, "response-trailers"))?;
+            if !headers_within_limits(&trailers, trailers.len()) {
+                return Err(Self::response_failure(state, 502, "response-trailers"));
+            }
+            let body_size = envoy.get_buffered_response_body_size();
+            if body_size < state.response_body_bytes {
+                return Err(Self::response_failure(state, 502, "response-body-size-regressed"));
+            }
+            if body_size > MAX_RESPONSE_BODY_BYTES {
+                return Err(Self::response_failure(state, 502, "response-body-limit"));
+            }
+            if !Self::reserve_response_body(state, body_size, true) {
+                return Err(Self::response_failure(state, 502, "response-body-admission"));
+            }
+            let body = copy_terminal_response_body(envoy, false, body_size, true)
+                .ok_or_else(|| Self::response_failure(state, 502, "response-body-buffer"))?;
+            state.response_stage = ResponseStage::Complete;
+            let interruption = state
+                .transaction
+                .as_mut()
+                .and_then(|transaction| transaction.process_response_body(&body));
+            drop(body);
+            if let Some(interruption) = interruption {
+                return Err(ResponseReply::interruption(
+                    state,
+                    &interruption,
+                    InterruptionPhase::ResponseBody,
+                ));
+            }
+            if state
+                .transaction
+                .as_deref()
+                .is_some_and(Transaction::inspection_incomplete)
+            {
+                return Err(Self::response_failure(state, 502, "response-body-inspection"));
+            }
+            state.response_body_truncated = state
+                .transaction
+                .as_ref()
+                .is_some_and(|transaction| transaction.response_body_stats().truncated);
+            if state.response_body_truncated {
+                state.outcome = Some(TerminalOutcome::BodyPartiallyInspected { phase: "response-body" });
+            }
+            let retained = state
+                .transaction
+                .as_ref()
+                .map_or(0, |transaction| transaction.body_memory_bytes());
+            let target = state.body_bytes.checked_add(retained);
+            if !target.is_some_and(|target| state.reservation.resize(target)) {
+                return Err(Self::response_failure(state, 502, "response-body-retention"));
+            }
+            state.response_body_bytes = body_size;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => ResponseTrailersStatus::Continue,
+            Err(reply) => {
+                self.send_response_reply(envoy, &reply);
+                ResponseTrailersStatus::StopIteration
+            },
+        }
+    }
+
+    fn response_failure(state: &mut StreamState, status: u16, phase: &'static str) -> ResponseReply {
+        state.stage = Stage::Terminal;
+        state.response_stage = ResponseStage::Complete;
+        state.outcome = Some(match phase {
+            "response-content-encoding" | "response-upgrade" => TerminalOutcome::Unsupported(phase),
+            "response-body-limit" => TerminalOutcome::BodyTooLarge {
+                phase: "response-body",
+                status,
+            },
+            "response-body-admission" | "response-body-retention" => {
+                TerminalOutcome::RetainedBodyBudgetExhausted { phase: "response-body" }
+            },
+            "response-headers-order"
+            | "response-body-order"
+            | "response-trailers-order"
+            | "response-body-size-regressed" => TerminalOutcome::InvalidLifecycle { phase, status },
+            _ => TerminalOutcome::Incomplete { phase, status },
+        });
+        ResponseReply::failure(status, phase, state.method.eq_ignore_ascii_case("HEAD"))
+    }
+
+    fn reserve_response_body(state: &mut StreamState, body_size: usize, copying: bool) -> bool {
+        let retained = state
+            .transaction
+            .as_ref()
+            .map_or(0, |transaction| transaction.body_memory_bytes());
+        let held = if copying {
+            body_size.checked_mul(2)
+        } else {
+            Some(body_size)
+        };
+        held.and_then(|held| state.body_bytes.checked_add(held))
+            .and_then(|held| retained.checked_add(held))
+            .is_some_and(|target| state.reservation.resize(target))
+    }
+
+    fn send_response_reply(&self, envoy: &mut impl EnvoyHttpFilter, reply: &ResponseReply) {
+        self.terminal.set(true);
+        if let Some(fields) = reply.interruption_fields.as_deref() {
+            let failed = crate::observability::publish_interruption(envoy, fields);
+            if let Ok(mut slot) = self.state.try_borrow_mut() {
+                if let Some(state) = slot.as_mut() {
+                    state.telemetry_publish_failed |= failed;
+                    if failed {
+                        state.generation.diagnostics().record_failure();
+                    }
+                }
+            }
+        }
+        let mut headers: Vec<(&str, &[u8])> = vec![("cache-control", b"no-store")];
+        if !reply.head
+            && !matches!(reply.status, 204 | 304)
+            && (reply.body != EMPTY_BODY || (reply.redirect && reply.location.is_none()))
+        {
+            headers.push(("content-type", b"text/plain; charset=utf-8"));
+        }
+        if let Some(location) = reply.location.as_deref() {
+            headers.push(("location", location));
+        }
+        envoy.send_response(
+            u32::from(reply.status),
+            &headers,
+            Some(reply.body()),
+            Some(reply.details),
+        );
+    }
 }
 
 impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for RequestFilter {
     fn on_request_headers(&self, envoy: &mut EHF, end_of_stream: bool) -> RequestHeadersStatus {
         if self.terminal.get() {
             return RequestHeadersStatus::StopIteration;
-        }
-        #[cfg(feature = "panic-probe")]
-        if envoy
-            .get_request_header_value("x-coraza-probe")
-            .is_some_and(|value| value.as_slice() == b"panic")
-        {
-            panic!("feature-gated request panic probe");
         }
         let result = self.on_headers(envoy, end_of_stream);
         match result {
@@ -570,11 +1115,99 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for RequestFilter {
         LocalReplyStatus::Continue
     }
 
-    fn on_stream_complete(&self, _envoy: &mut EHF) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            let body_bytes = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
-            let _ = state.reservation.resize(body_bytes);
+    fn on_response_headers(&self, envoy: &mut EHF, end_of_stream: bool) -> ResponseHeadersStatus {
+        match self.response_headers(envoy, end_of_stream) {
+            Ok(status) => status,
+            Err(reply) => {
+                self.send_response_reply(envoy, &reply);
+                ResponseHeadersStatus::StopIteration
+            },
         }
+    }
+
+    fn on_response_body(&self, envoy: &mut EHF, end_of_stream: bool) -> ResponseBodyStatus {
+        #[cfg(feature = "panic-probe")]
+        if self
+            .state
+            .try_borrow()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|state| state.response_panic_probe))
+            .is_some_and(|probe| probe)
+        {
+            panic!("feature-gated response panic probe");
+        }
+        self.response_body(envoy, end_of_stream)
+    }
+
+    fn on_response_trailers(&self, envoy: &mut EHF) -> ResponseTrailersStatus {
+        self.response_trailers(envoy)
+    }
+
+    fn on_stream_complete(&self, envoy: &mut EHF) {
+        let publication = {
+            let Ok(mut slot) = self.state.try_borrow_mut() else {
+                return;
+            };
+            let Some(state) = slot.as_mut() else {
+                return;
+            };
+            let fallback = terminal_outcome(state);
+            let Some((outcome, finalization_failed)) = state.finish(fallback) else {
+                return;
+            };
+            let inspection_complete = matches!(outcome, TerminalOutcome::Completed | TerminalOutcome::Denied { .. })
+                && !state.request_body_truncated
+                && !state.response_body_truncated;
+            let generation = Arc::clone(&state.generation);
+            let health = HealthState {
+                inspection_complete,
+                inspection_reason: if finalization_failed {
+                    "finalization_error"
+                } else {
+                    outcome.inspection_reason()
+                },
+                generation: generation.generation_id(),
+                request_body_truncated: state.request_body_truncated,
+                response_body_truncated: state.response_body_truncated,
+                terminal_outcome: if finalization_failed {
+                    "error"
+                } else {
+                    outcome.terminal_name()
+                },
+                telemetry_publish_failed: state.telemetry_publish_failed,
+            };
+            Some((generation, health))
+        };
+        if let Some((generation, health)) = publication {
+            if crate::observability::publish_health(envoy, generation.enable_filter_state_logs(), health)
+                && !health.telemetry_publish_failed
+            {
+                generation.diagnostics().record_failure();
+            }
+        }
+    }
+}
+
+fn terminal_outcome(state: &StreamState) -> TerminalOutcome {
+    if let Some(outcome) = state.outcome.as_ref() {
+        return outcome.clone();
+    }
+    match (state.stage, state.response_stage) {
+        (Stage::Held, _) => TerminalOutcome::Incomplete {
+            phase: "request-body-aborted",
+            status: 503,
+        },
+        (Stage::Complete, ResponseStage::Headers | ResponseStage::Body) => TerminalOutcome::Incomplete {
+            phase: "response-body-aborted",
+            status: 502,
+        },
+        (Stage::Complete, ResponseStage::Complete) => TerminalOutcome::Completed,
+        (Stage::Complete, ResponseStage::Waiting) => TerminalOutcome::UpstreamFailureOrCancellation,
+        (Stage::Bypassed, _) => TerminalOutcome::UnmatchedAuthority,
+        _ => TerminalOutcome::InvalidLifecycle {
+            phase: "stream-complete",
+            status: 503,
+        },
     }
 }
 
@@ -595,6 +1228,16 @@ fn phase2(state: &mut StreamState, body: &[u8]) -> Result<(), Reply> {
         });
     }
     Ok(())
+}
+
+#[cfg(feature = "panic-probe")]
+fn check_panic_probe(state: &mut StreamState, headers: &OwnedHeaders) {
+    if let Some(probe) = find_header(headers, "x-coraza-probe") {
+        state.response_panic_probe = probe == b"panic-response";
+        if probe == b"panic" {
+            panic!("feature-gated request panic probe");
+        }
+    }
 }
 
 fn create_transaction<EHF: EnvoyHttpFilter>(
@@ -744,6 +1387,30 @@ fn copy_terminal_body<EHF: EnvoyHttpFilter>(
     (body.len() == expected).then_some(body)
 }
 
+fn copy_terminal_response_body<EHF: EnvoyHttpFilter>(
+    envoy: &mut EHF,
+    received_buffered: bool,
+    expected: usize,
+    trailers: bool,
+) -> Option<Vec<u8>> {
+    let mut body = Vec::with_capacity(expected);
+    if let Some(buffered) = envoy.get_buffered_response_body() {
+        for fragment in &buffered {
+            body.extend_from_slice(fragment.as_slice());
+        }
+        drop(buffered);
+    }
+    if !trailers && !received_buffered {
+        if let Some(received) = envoy.get_received_response_body() {
+            for fragment in &received {
+                body.extend_from_slice(fragment.as_slice());
+            }
+            drop(received);
+        }
+    }
+    (body.len() == expected).then_some(body)
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "Native stream tests use fixed valid fixtures.")]
 #[expect(
@@ -752,6 +1419,7 @@ fn copy_terminal_body<EHF: EnvoyHttpFilter>(
 )]
 mod tests {
     use std::{
+        cell::{Cell, RefCell},
         rc::Rc,
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -760,7 +1428,11 @@ mod tests {
     };
 
     use coraza::transaction::Interruption;
-    use envoy_coraza_common::{config::Config, observability::Diagnostics, policy::Generation};
+    use envoy_coraza_common::{
+        config::Config,
+        observability::{Diagnostics, TerminalOutcome},
+        policy::Generation,
+    };
     use envoy_proxy_dynamic_modules_rust_sdk::{
         abi::{
             envoy_dynamic_module_type_attribute_id as AttributeId,
@@ -768,17 +1440,41 @@ mod tests {
             envoy_dynamic_module_type_on_http_filter_request_body_status as RequestBodyStatus,
             envoy_dynamic_module_type_on_http_filter_request_headers_status as RequestHeadersStatus,
             envoy_dynamic_module_type_on_http_filter_request_trailers_status as RequestTrailersStatus,
+            envoy_dynamic_module_type_on_http_filter_response_body_status as ResponseBodyStatus,
+            envoy_dynamic_module_type_on_http_filter_response_headers_status as ResponseHeadersStatus,
+            envoy_dynamic_module_type_on_http_filter_response_trailers_status as ResponseTrailersStatus,
         },
         EnvoyBuffer, EnvoyMutBuffer, HttpFilter as _, MockEnvoyHttpFilter,
     };
 
-    use super::{try_reserve, BodyReservation, FilterConfig, Stage, RETAINED_BODY_BYTES};
+    use super::{
+        terminal_outcome, try_reserve, BodyReservation, FilterConfig, ResponseStage, Stage, StreamState,
+        MAX_HEADER_VALUE_BYTES, RETAINED_BODY_BYTES,
+    };
 
     fn generation(directive: &str) -> Arc<Generation> {
         Arc::new(
             Generation::compile(
                 Config::parse(
                     format!(r#"{{"directives_map":{{"p":[{directive:?}]}},"default_directives":"p"}}"#).as_bytes(),
+                )
+                .unwrap(),
+                Arc::new(Diagnostics::default()),
+                |_| {},
+                |_, _| {},
+            )
+            .unwrap(),
+        )
+    }
+
+    fn logged_generation(directive: &str) -> Arc<Generation> {
+        Arc::new(
+            Generation::compile(
+                Config::parse(
+                    format!(
+                        r#"{{"directives_map":{{"p":[{directive:?}]}} ,"default_directives":"p","enable_filter_state_logs":true}}"#,
+                    )
+                    .as_bytes(),
                 )
                 .unwrap(),
                 Arc::new(Diagnostics::default()),
@@ -877,10 +1573,50 @@ mod tests {
         .unwrap())
     }
 
+    fn response_body_rule_generation() -> Arc<Generation> {
+        Arc::new(Generation::compile(
+            Config::parse(
+                br#"{"directives_map":{"p":["SecRuleEngine On","SecResponseBodyAccess On","SecResponseBodyLimit 100","SecResponseBodyMimeType text/plain","SecRule RESPONSE_BODY \"@contains secret\" \"id:44,phase:4,deny,status:451\""]},"default_directives":"p"}"#,
+            )
+            .unwrap(),
+            Arc::new(Diagnostics::default()),
+            |_| {},
+            |_, _| {},
+        )
+        .unwrap())
+    }
+
+    fn response_header_rule_generation(directives: &str) -> Arc<Generation> {
+        Arc::new(Generation::compile(
+            Config::parse(
+                format!(
+                    r#"{{"directives_map":{{"p":["SecRuleEngine On",{directives:?},"SecRule RESPONSE_HEADERS:x-deny-response \"@streq yes\" \"id:45,phase:4,deny,status:452\""]}},"default_directives":"p"}}"#,
+                )
+                .as_bytes(),
+            )
+            .unwrap(),
+            Arc::new(Diagnostics::default()),
+            |_| {},
+            |_, _| {},
+        )
+        .unwrap())
+    }
+
     fn attack_view() -> EnvoyMutBuffer<'static> {
         static mut BODY: [u8; 6] = *b"attack";
         // SAFETY: the mock only reads the immutable static bytes during the synchronous hook.
         unsafe { EnvoyMutBuffer::new(&raw mut BODY) }
+    }
+
+    fn secret_view() -> EnvoyMutBuffer<'static> {
+        static mut BODY: [u8; 13] = *b"public-secret";
+        // SAFETY: the mock only reads the immutable static bytes during the synchronous hook.
+        unsafe { EnvoyMutBuffer::new(&raw mut BODY) }
+    }
+
+    fn oversized_header_value() -> EnvoyBuffer<'static> {
+        static VALUE: [u8; MAX_HEADER_VALUE_BYTES + 1] = [b'a'; MAX_HEADER_VALUE_BYTES + 1];
+        EnvoyBuffer::new(&VALUE)
     }
 
     #[test]
@@ -918,16 +1654,16 @@ mod tests {
     fn streams_pin_the_generation_across_config_replacement() {
         let old_config = FilterConfig::new(generation("SecRuleEngine On"));
         let old_stream = old_config.new_stream();
-        let old_ptr = Arc::as_ptr(&old_stream.state.borrow().generation);
+        let old_ptr = Arc::as_ptr(&old_stream.generation);
         drop(old_config);
 
         let new_config = FilterConfig::new(generation("SecRuleEngine DetectionOnly"));
         let new_stream = new_config.new_stream();
-        let new_ptr = Arc::as_ptr(&new_stream.state.borrow().generation);
+        let new_ptr = Arc::as_ptr(&new_stream.generation);
 
         assert_ne!(old_ptr, new_ptr);
-        assert_eq!(Arc::as_ptr(&old_stream.state.borrow().generation), old_ptr);
-        assert_eq!(old_stream.state.borrow().stage, Stage::New);
+        assert_eq!(Arc::as_ptr(&old_stream.generation), old_ptr);
+        assert!(old_stream.state.borrow().is_none());
     }
 
     #[test]
@@ -946,6 +1682,46 @@ mod tests {
             filter.on_request_headers(&mut envoy, true),
             RequestHeadersStatus::StopIteration,
         );
+    }
+
+    #[test]
+    fn request_interruption_state_is_published_before_local_reply_even_if_it_fails() {
+        let filter = Rc::new(
+            FilterConfig::new(logged_generation(
+                r#"SecRule REQUEST_URI "@contains attack" "id:99,phase:1,deny,status:418""#,
+            ))
+            .new_stream(),
+        );
+        let fields_written = Rc::new(Cell::new(0_usize));
+        let callback_fields = Rc::clone(&fields_written);
+        let callback_filter = Rc::clone(&filter);
+        let mut envoy = MockEnvoyHttpFilter::default();
+        prepare_header_mock(&mut envoy, b"GET", b"/attack");
+        envoy.expect_set_filter_state_bytes().returning_st(move |key, _| {
+            assert!(key.starts_with(b"wasm.io.coraza.waf."));
+            callback_fields.set(callback_fields.get() + 1);
+            false
+        });
+        envoy
+            .expect_send_response()
+            .returning_st(move |status, _headers, _body, _details| {
+                assert_eq!(status, 418);
+                assert!(
+                    fields_written.get() > 0,
+                    "interruption state is published before the local reply"
+                );
+                assert!(callback_filter.terminal.get());
+            });
+
+        assert_eq!(
+            filter.on_request_headers(&mut envoy, true),
+            RequestHeadersStatus::StopIteration
+        );
+        assert!(filter
+            .state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.telemetry_publish_failed));
     }
 
     #[test]
@@ -1035,7 +1811,10 @@ mod tests {
             filter.on_request_body(&mut envoy, true),
             RequestBodyStatus::StopIterationNoBuffer,
         );
-        assert_eq!(filter.state.borrow().stage, Stage::Terminal);
+        assert_eq!(
+            filter.state.borrow().as_ref().map(|state| state.stage),
+            Some(Stage::Terminal)
+        );
     }
 
     #[test]
@@ -1093,9 +1872,281 @@ mod tests {
                 filter.on_request_headers(&mut envoy, false),
                 RequestHeadersStatus::Continue,
             );
-            assert_eq!(filter.state.borrow().stage, Stage::Complete);
-            assert!(filter.state.borrow().phase2_done);
+            assert_eq!(
+                filter.state.borrow().as_ref().map(|state| state.stage),
+                Some(Stage::Complete)
+            );
+            assert!(filter.state.borrow().as_ref().is_some_and(|state| state.phase2_done));
             assert!(!filter.terminal.get());
         }
+    }
+
+    #[test]
+    fn never_decoded_stream_response_callbacks_pass_without_creating_state() {
+        let filter = FilterConfig::new(generation("SecRuleEngine On")).new_stream();
+        let mut envoy = MockEnvoyHttpFilter::default();
+
+        assert_eq!(
+            filter.on_response_headers(&mut envoy, false),
+            ResponseHeadersStatus::Continue
+        );
+        assert_eq!(filter.on_response_body(&mut envoy, true), ResponseBodyStatus::Continue);
+        assert_eq!(
+            filter.on_response_trailers(&mut envoy),
+            ResponseTrailersStatus::Continue
+        );
+        filter.on_stream_complete(&mut envoy);
+
+        assert!(filter.state.borrow().is_none());
+        assert!(!filter.terminal.get());
+    }
+
+    #[test]
+    fn response_body_rule_uses_local_reply_from_encode_body_without_upstream_leakage() {
+        let filter = Rc::new(FilterConfig::new(response_body_rule_generation()).new_stream());
+        let mut envoy = MockEnvoyHttpFilter::default();
+        prepare_header_mock(&mut envoy, b"GET", b"/response-deny");
+        assert_eq!(
+            filter.on_request_headers(&mut envoy, true),
+            RequestHeadersStatus::Continue
+        );
+
+        envoy.expect_get_response_headers().returning(|| {
+            vec![
+                (EnvoyBuffer::new(b":status"), EnvoyBuffer::new(b"200")),
+                (EnvoyBuffer::new(b"content-type"), EnvoyBuffer::new(b"text/plain")),
+                (
+                    EnvoyBuffer::new(b"x-upstream-secret"),
+                    EnvoyBuffer::new(b"must-not-leak"),
+                ),
+            ]
+        });
+        envoy.expect_get_buffer_limit().return_const(16_u64 * 1024 * 1024);
+        envoy.expect_set_buffer_limit().return_const(());
+        assert_eq!(
+            filter.on_response_headers(&mut envoy, false),
+            ResponseHeadersStatus::StopIteration
+        );
+
+        envoy.expect_received_buffered_response_body().return_const(false);
+        envoy.expect_get_received_response_body_size().return_const(13_usize);
+        envoy.expect_get_buffered_response_body_size().return_const(0_usize);
+        envoy.expect_get_buffered_response_body().returning_st(|| None);
+        let secret = secret_view();
+        envoy
+            .expect_get_received_response_body()
+            .returning_st(move || Some(vec![secret]));
+        let reply_filter = Rc::clone(&filter);
+        envoy
+            .expect_send_response()
+            .returning_st(move |status, headers, body, _details| {
+                assert_eq!(status, 451);
+                assert_eq!(body, Some(b"Upstream response blocked\n".as_slice()));
+                assert!(headers.iter().all(|(name, _)| *name != "x-upstream-secret"));
+                assert!(
+                    reply_filter.terminal.get(),
+                    "the stream is terminal before the re-entrant local reply"
+                );
+                let mut callback_envoy = MockEnvoyHttpFilter::default();
+                assert_eq!(
+                    reply_filter.on_local_reply(&mut callback_envoy, status, EnvoyBuffer::new(b""), false),
+                    LocalReplyStatus::Continue
+                );
+            });
+
+        assert_eq!(
+            filter.on_response_body(&mut envoy, true),
+            ResponseBodyStatus::StopIterationNoBuffer
+        );
+    }
+
+    #[test]
+    fn response_header_budget_failure_returns_generic_502() {
+        let filter = FilterConfig::new(generation("SecRuleEngine On")).new_stream();
+        let mut envoy = MockEnvoyHttpFilter::default();
+        prepare_header_mock(&mut envoy, b"GET", b"/large-response-header");
+        assert_eq!(
+            filter.on_request_headers(&mut envoy, true),
+            RequestHeadersStatus::Continue
+        );
+        envoy.expect_get_response_headers().returning(|| {
+            vec![
+                (EnvoyBuffer::new(b":status"), EnvoyBuffer::new(b"200")),
+                (EnvoyBuffer::new(b"x-large"), oversized_header_value()),
+            ]
+        });
+        envoy
+            .expect_send_response()
+            .returning_st(|status, headers, body, _details| {
+                assert_eq!(status, 502);
+                assert_eq!(body, Some(b"Response inspection unavailable\n".as_slice()));
+                assert!(!headers.iter().any(|(name, _)| *name == "x-large"));
+            });
+
+        assert_eq!(
+            filter.on_response_headers(&mut envoy, false),
+            ResponseHeadersStatus::StopIteration
+        );
+    }
+
+    #[test]
+    fn phase_four_header_rules_run_at_headers_for_mime_excluded_and_body_off_responses() {
+        for policy in [
+            response_header_rule_generation("SecResponseBodyAccess On\nSecResponseBodyMimeType text/plain"),
+            response_header_rule_generation("SecResponseBodyAccess Off"),
+        ] {
+            let filter = Rc::new(FilterConfig::new(policy).new_stream());
+            let mut envoy = MockEnvoyHttpFilter::default();
+            prepare_header_mock(&mut envoy, b"GET", b"/phase-four-header");
+            assert_eq!(
+                filter.on_request_headers(&mut envoy, true),
+                RequestHeadersStatus::Continue
+            );
+            envoy.expect_get_response_headers().returning(|| {
+                vec![
+                    (EnvoyBuffer::new(b":status"), EnvoyBuffer::new(b"200")),
+                    (
+                        EnvoyBuffer::new(b"content-type"),
+                        EnvoyBuffer::new(b"application/octet-stream"),
+                    ),
+                    (EnvoyBuffer::new(b"x-deny-response"), EnvoyBuffer::new(b"yes")),
+                ]
+            });
+            envoy
+                .expect_send_response()
+                .returning_st(move |status, _headers, _body, _details| assert_eq!(status, 452));
+
+            assert_eq!(
+                filter.on_response_headers(&mut envoy, false),
+                ResponseHeadersStatus::StopIteration
+            );
+        }
+    }
+
+    #[test]
+    fn stream_completion_finishes_once_releases_admission_and_publishes_health_before_host_flush() {
+        let generation = Arc::new(
+            Generation::compile(
+                Config::parse(
+                    br#"{"directives_map":{"p":["SecRuleEngine On"]},"default_directives":"p","enable_filter_state_logs":true}"#,
+                )
+                .unwrap(),
+                Arc::new(Diagnostics::default()),
+                |_| {},
+                |_, _| {},
+            )
+            .unwrap(),
+        );
+        let policy = generation.select("example.test").unwrap();
+        let filter = Rc::new(FilterConfig::new(Arc::clone(&generation)).new_stream());
+        let mut state = StreamState::new(Arc::clone(&generation));
+        state.stage = Stage::Complete;
+        state.response_stage = ResponseStage::Complete;
+        state.transaction = Some(Box::new(policy.waf.new_transaction()));
+        assert!(state.reservation.resize(19));
+        *filter.state.borrow_mut() = Some(state);
+
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let expected_keys = Rc::clone(&keys);
+        let callback_filter = Rc::clone(&filter);
+        let mut envoy = MockEnvoyHttpFilter::default();
+        envoy
+            .expect_set_filter_state_bytes()
+            .times(7)
+            .returning_st(move |key, value| {
+                let key = std::str::from_utf8(key).unwrap().to_owned();
+                let value = std::str::from_utf8(value).unwrap().to_owned();
+                let state = callback_filter.state.borrow();
+                let state = state.as_ref().unwrap();
+                assert!(state.finalized, "health state is set after transaction finalization");
+                assert!(state.transaction.is_none());
+                assert_eq!(
+                    state.reservation.bytes, 0,
+                    "retained memory is released before access-log state"
+                );
+                expected_keys.borrow_mut().push((key, value));
+                true
+            });
+
+        filter.on_stream_complete(&mut envoy);
+        filter.on_stream_complete(&mut envoy);
+
+        let keys = keys.borrow();
+        assert_eq!(keys.len(), 7);
+        assert!(keys.contains(&(
+            "wasm.io.coraza.waf.v1.inspection_reason".to_owned(),
+            "complete".to_owned()
+        )));
+        assert!(keys.contains(&(
+            "wasm.io.coraza.waf.v1.terminal_outcome".to_owned(),
+            "completed".to_owned()
+        )));
+        assert!(keys.contains(&(
+            "wasm.io.coraza.waf.v1.telemetry_publish_failed".to_owned(),
+            "false".to_owned()
+        )));
+    }
+
+    #[test]
+    fn terminal_outcomes_distinguish_denial_completion_and_cancellation() {
+        let generation = generation("SecRuleEngine On");
+        let mut denied = StreamState::new(Arc::clone(&generation));
+        denied.stage = Stage::Terminal;
+        denied.outcome = Some(TerminalOutcome::Denied {
+            phase: "response-body",
+            status: 451,
+        });
+        assert_eq!(terminal_outcome(&denied).terminal_name(), "denied");
+
+        let mut complete = StreamState::new(Arc::clone(&generation));
+        complete.stage = Stage::Complete;
+        complete.response_stage = ResponseStage::Complete;
+        assert_eq!(terminal_outcome(&complete).terminal_name(), "completed");
+
+        let mut reset = StreamState::new(generation);
+        reset.stage = Stage::Complete;
+        assert_eq!(
+            terminal_outcome(&reset).terminal_name(),
+            "upstream_failure_or_cancellation"
+        );
+    }
+
+    #[test]
+    fn drop_finalizes_transaction_when_completion_callback_is_missing() {
+        struct FinishLogger(Arc<AtomicUsize>);
+
+        impl coraza::debug_log::DebugLogger for FinishLogger {
+            fn enabled(&self, _level: coraza::debug_log::DebugLevel) -> bool {
+                true
+            }
+
+            fn log(&self, _level: coraza::debug_log::DebugLevel, event: &coraza::debug_log::DebugEvent<'_>) {
+                if event.message == "Transaction finalized" {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let finalized = Arc::new(AtomicUsize::new(0));
+        let generation = Arc::new(
+            Generation::compile_with_debug_logger(
+                Config::parse(
+                    br#"{"directives_map":{"p":["SecRuleEngine On","SecDebugLogLevel 4"]},"default_directives":"p"}"#,
+                )
+                .unwrap(),
+                Arc::new(Diagnostics::default()),
+                |_| {},
+                |_, _| {},
+                Arc::new(FinishLogger(Arc::clone(&finalized))),
+            )
+            .unwrap(),
+        );
+        let policy = generation.select("example.test").unwrap();
+        let mut state = StreamState::new(Arc::clone(&generation));
+        state.transaction = Some(Box::new(policy.waf.new_transaction()));
+
+        drop(state);
+
+        assert_eq!(finalized.load(Ordering::Relaxed), 1);
     }
 }

@@ -35,7 +35,7 @@ use envoy_coraza_common::{
         authority_host, find_header, has_unsupported_content_encoding, has_upgrade, headers_within_limits,
         normalize_authority, request_authority, MAX_HEADER_COUNT,
     },
-    observability::{HealthState, InterruptionPhase},
+    observability::{HealthState, InterruptionPhase, TerminalOutcome},
     policy::{Generation, Policy},
 };
 use proxy_wasm::{
@@ -61,82 +61,6 @@ const RESPONSE_BLOCK_BODY: &[u8] = b"Upstream response blocked\n";
 const REQUEST_INCOMPLETE_BODY: &[u8] = b"Request inspection unavailable\n";
 const RESPONSE_INCOMPLETE_BODY: &[u8] = b"Response inspection unavailable\n";
 const UNSUPPORTED_BODY: &[u8] = b"Request feature is not supported\n";
-
-/// Terminal or explicitly incomplete outcome retained for Stage E publication.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TerminalOutcome {
-    /// No configured policy matched; traffic continued uninspected.
-    UnmatchedAuthority,
-    /// The selected policy has `SecRuleEngine Off`.
-    EngineOff,
-    /// The request or response used an unsupported feature.
-    Unsupported(&'static str),
-    /// A WAF rule interrupted a request or response.
-    Denied { phase: &'static str, status: u16 },
-    /// An incomplete body was rejected.
-    Incomplete { phase: &'static str, status: u16 },
-    /// A host or policy body ceiling was reached.
-    BodyTooLarge { phase: &'static str, status: u16 },
-    /// Coraza processed the configured prefix and allowed the request to continue.
-    BodyPartiallyInspected { phase: &'static str },
-    /// The per-root retained-body cap was exhausted.
-    RetainedBodyBudgetExhausted { phase: &'static str },
-    /// A callback sequence or host response made inspection impossible.
-    InvalidLifecycle { phase: &'static str, status: u16 },
-    /// The request authority was not valid UTF-8 or a valid authority value.
-    InvalidAuthority { status: u16 },
-    /// The stream ended before a complete response; SDK 0.2.5 does not report the cause.
-    UpstreamFailureOrCancellation,
-    /// The transaction reached a complete response.
-    Completed,
-}
-
-impl TerminalOutcome {
-    fn inspection_reason(&self) -> &'static str {
-        match self {
-            Self::UnmatchedAuthority => "unmatched_authority",
-            Self::EngineOff => "engine_off",
-            Self::Unsupported(_) => "unsupported",
-            Self::Denied { .. } => "denied",
-            Self::Incomplete { .. } => "incomplete",
-            Self::BodyTooLarge { .. } => "body_too_large",
-            Self::BodyPartiallyInspected { .. } => "body_partially_inspected",
-            Self::RetainedBodyBudgetExhausted { .. } => "retained_body_budget_exhausted",
-            Self::InvalidLifecycle { .. } => "invalid_lifecycle",
-            Self::InvalidAuthority { .. } => "invalid_authority",
-            Self::UpstreamFailureOrCancellation => "upstream_failure_or_cancellation",
-            Self::Completed => "complete",
-        }
-    }
-
-    fn terminal_name(&self) -> &'static str {
-        match self {
-            Self::UnmatchedAuthority | Self::EngineOff => "uninspected",
-            Self::Unsupported(_) => "unsupported",
-            Self::Denied { .. } => "denied",
-            Self::Incomplete { .. } | Self::BodyPartiallyInspected { .. } => "incomplete",
-            Self::BodyTooLarge { .. }
-            | Self::RetainedBodyBudgetExhausted { .. }
-            | Self::InvalidLifecycle { .. }
-            | Self::InvalidAuthority { .. } => "error",
-            Self::UpstreamFailureOrCancellation => "upstream_failure_or_cancellation",
-            Self::Completed => "completed",
-        }
-    }
-
-    #[cfg(test)]
-    fn is_error(&self) -> bool {
-        matches!(
-            self,
-            Self::Incomplete { .. }
-                | Self::BodyTooLarge { .. }
-                | Self::RetainedBodyBudgetExhausted { .. }
-                | Self::InvalidLifecycle { .. }
-                | Self::InvalidAuthority { .. }
-                | Self::UpstreamFailureOrCancellation
-        )
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestStage {

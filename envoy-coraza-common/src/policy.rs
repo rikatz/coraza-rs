@@ -35,6 +35,7 @@ use coraza::{
     Waf,
     audit_log::{AuditLog, MatchedRule},
     config::{UploadKeepFiles, WafConfig},
+    debug_log::{DebugLogger, Noop},
     rule_data::{FileSystem, Memory, RuleData},
     seclang::Parser,
     types::{AuditLogFormat, AuditLogType, RuleEngineStatus},
@@ -51,6 +52,18 @@ use crate::{
 type ErrorLogCallback = dyn Fn(&MatchedRule) + Send + Sync;
 /// Callback used to publish one formatted audit record.
 type AuditLogCallback = dyn Fn(&AuditLog, AuditLogFormat) + Send + Sync;
+/// Host-specific debug logger shared by policies in this generation.
+type DebugLogCallback = dyn DebugLogger;
+
+/// Host-provided logging callbacks used by each compiled policy.
+struct LogCallbacks {
+    /// Rule-error callback.
+    error_log: Arc<ErrorLogCallback>,
+    /// Selected audit-entry callback.
+    audit_log: Arc<AuditLogCallback>,
+    /// Engine debug event sink.
+    debug_logger: Arc<DebugLogCallback>,
+}
 
 #[cfg(feature = "embed-crs")]
 pub(crate) mod embedded_crs {
@@ -384,10 +397,8 @@ impl RuleBudget {
 struct PolicyCompiler {
     /// Rule data source shared by the generation.
     rule_data: Arc<dyn RuleData>,
-    /// Adapter-provided bounded error-log publication.
-    error_log: Arc<ErrorLogCallback>,
-    /// Adapter-provided bounded audit-log publication.
-    audit_log: Arc<AuditLogCallback>,
+    /// Adapter-provided bounded log publication.
+    logs: LogCallbacks,
 }
 
 impl PolicyCompiler {
@@ -399,11 +410,12 @@ impl PolicyCompiler {
         rule_budget: RuleBudget,
     ) -> Result<(Policy, usize, Vec<String>), CompileError> {
         let mut parser = Parser::new()
+            .with_debug_logger(Arc::clone(&self.logs.debug_logger))
             .with_rule_data(Arc::clone(&self.rule_data))
             .with_rule_limit(rule_budget.parser_limit());
         parser.config_mut().multiphase_evaluation = true;
         parser.config_mut().audit_engine_locked = false;
-        let error_log = Arc::clone(&self.error_log);
+        let error_log = Arc::clone(&self.logs.error_log);
         parser.on_error_log(move |matched| error_log(matched));
         let text = directives.join("\n");
         let failure = |message: String| CompileError::Directive {
@@ -425,7 +437,7 @@ impl PolicyCompiler {
         let parser_warnings = parser.warnings().to_vec();
         let count = parser.total_rule_count();
         let audit_format = parser.config().audit_log_format;
-        let audit_log = Arc::clone(&self.audit_log);
+        let audit_log = Arc::clone(&self.logs.audit_log);
         parser.on_audit_log(move |entry| audit_log(entry, audit_format));
         // Host policy: `ctl` cannot raise effective body limits past what the adapter buffers.
         parser.config_mut().max_request_body_limit = MAX_REQUEST_BODY_LIMIT;
@@ -492,12 +504,31 @@ impl Generation {
         error_log: impl Fn(&MatchedRule) + Send + Sync + 'static,
         audit_log: impl Fn(&AuditLog, AuditLogFormat) + Send + Sync + 'static,
     ) -> Result<Self, CompileError> {
+        Self::compile_with_debug_logger(config, diagnostics, error_log, audit_log, Arc::new(Noop))
+    }
+
+    /// Compiles every policy with a host-provided debug logger.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompileError`] when policy parsing, limits, host restrictions,
+    /// or policy selection validation fails.
+    pub fn compile_with_debug_logger(
+        config: Config,
+        diagnostics: Arc<Diagnostics>,
+        error_log: impl Fn(&MatchedRule) + Send + Sync + 'static,
+        audit_log: impl Fn(&AuditLog, AuditLogFormat) + Send + Sync + 'static,
+        debug_logger: Arc<dyn DebugLogger>,
+    ) -> Result<Self, CompileError> {
         Self::compile_with_limits(
             config,
             COMPILE_LIMITS,
             diagnostics,
-            Arc::new(error_log),
-            Arc::new(audit_log),
+            LogCallbacks {
+                error_log: Arc::new(error_log),
+                audit_log: Arc::new(audit_log),
+                debug_logger,
+            },
         )
     }
 
@@ -506,8 +537,7 @@ impl Generation {
         config: Config,
         limits: CompileLimits,
         diagnostics: Arc<Diagnostics>,
-        error_log: Arc<ErrorLogCallback>,
-        audit_log: Arc<AuditLogCallback>,
+        logs: LogCallbacks,
     ) -> Result<Self, CompileError> {
         check_limits(&config, limits)?;
         // Resolve references first, so a name typo fails before any policy compiles.
@@ -550,8 +580,7 @@ impl Generation {
         ));
         let compiler = PolicyCompiler {
             rule_data: source,
-            error_log,
-            audit_log,
+            logs,
         };
         let mut policies = BTreeMap::new();
         let mut generation_rules = 0_usize;
@@ -649,6 +678,9 @@ fn check_host_safety(config: &WafConfig) -> Result<(), String> {
     if !config.audit_log_storage_dir.is_empty() {
         return Err("SecAuditLogStorageDir names a directory, which this build does not provide".to_owned());
     }
+    if !config.debug_log.is_empty() {
+        return Err("SecDebugLog names a file sink, which this build does not provide".to_owned());
+    }
     if config.audit_log_type != AuditLogType::Serial {
         return Err("SecAuditLogType needs a sink, which this build does not provide".to_owned());
     }
@@ -710,8 +742,8 @@ mod tests {
     };
 
     use super::{
-        COMPILE_LIMITS, CompileError, CompileLimits, Generation, MAX_POLICIES, MAX_REQUEST_BODY_LIMIT,
-        MAX_RESPONSE_BODY_LIMIT, MAX_RULES_PER_GENERATION, MAX_RULES_PER_POLICY, check_limits, truncate_message,
+        COMPILE_LIMITS, CompileError, CompileLimits, Generation, LogCallbacks, MAX_POLICIES, MAX_REQUEST_BODY_LIMIT,
+        MAX_RESPONSE_BODY_LIMIT, MAX_RULES_PER_GENERATION, MAX_RULES_PER_POLICY, Noop, check_limits, truncate_message,
     };
     use crate::{config::Config, observability::Diagnostics};
 
@@ -740,8 +772,11 @@ mod tests {
             parse_config(json),
             limits,
             Arc::new(Diagnostics::default()),
-            Arc::new(|_| {}),
-            Arc::new(|_, _| {}),
+            LogCallbacks {
+                error_log: Arc::new(|_| {}),
+                audit_log: Arc::new(|_, _| {}),
+                debug_logger: Arc::new(Noop),
+            },
         )
     }
 
@@ -1345,6 +1380,14 @@ mod tests {
                 "the error names the limit: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn file_debug_sink_is_rejected_instead_of_opened_on_a_worker() {
+        let error = compile_error(
+            r#"{"directives_map":{"p":["SecDebugLog /tmp/coraza-debug.log","SecDebugLogLevel 4"]},"default_directives":"p"}"#,
+        );
+        assert!(error.contains("SecDebugLog names a file sink"));
     }
 
     #[test]
