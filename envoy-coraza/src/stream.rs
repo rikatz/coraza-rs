@@ -30,16 +30,21 @@ use coraza::{
     transaction::{Interruption, Transaction},
     types::RuleEngineStatus,
 };
+use envoy_coraza_common::{
+    authority::{
+        authority_host, find_header, has_unsupported_content_encoding, has_upgrade, headers_within_limits,
+        normalize_authority, request_authority, MAX_HEADER_COUNT,
+    },
+    observability::{HealthState, InterruptionPhase},
+    policy::{Generation, Policy},
+};
 use proxy_wasm::{
     hostcalls,
     traits::{Context, HttpContext},
     types::{Action, BufferType, LogLevel, MapType, Status},
 };
 
-use crate::{
-    observability::{self, HealthState, InterruptionPhase},
-    policy::{Generation, Policy},
-};
+use crate::observability;
 
 /// Largest request body held by the connector or Envoy before a body verdict.
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -50,15 +55,6 @@ const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 /// Maximum retained body bytes shared by streams in one Proxy-Wasm root context.
 /// Each worker has its own root context and counter; this is not a worker-wide cap.
 const MAX_ROOT_RETAINED_BODY_BYTES: usize = 64 * 1024 * 1024;
-
-/// Header count accepted in either direction.
-const MAX_HEADER_COUNT: usize = 1024;
-
-/// Maximum bytes accepted in one HTTP header value.
-const MAX_HEADER_VALUE_BYTES: usize = 64 * 1024;
-
-/// Maximum bytes accepted across one direction's headers.
-const MAX_HEADERS_BYTES: usize = 1024 * 1024;
 
 const REQUEST_BLOCK_BODY: &[u8] = b"";
 const RESPONSE_BLOCK_BODY: &[u8] = b"Upstream response blocked\n";
@@ -1579,20 +1575,6 @@ fn connection_endpoint(direction: &str) -> (String, u16) {
     (ip, port)
 }
 
-fn find_header<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8]> {
-    headers
-        .iter()
-        .find(|(header, _)| header.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_slice())
-}
-
-fn request_authority(headers: &[(String, Vec<u8>)], fallback: Option<&[u8]>) -> Vec<u8> {
-    find_header(headers, ":authority")
-        .or(fallback)
-        .unwrap_or_default()
-        .to_vec()
-}
-
 fn request_metadata(headers: &[(String, Vec<u8>)]) -> Option<RequestMetadata> {
     let method = find_header(headers, ":method")
         .map(<[u8]>::to_vec)
@@ -1637,142 +1619,6 @@ fn prepare_transaction(
     (interruption, engine_off, body_access)
 }
 
-fn headers_within_limits(headers: &[(String, Vec<u8>)], reported_count: usize) -> bool {
-    if headers.len() > MAX_HEADER_COUNT || headers.len() > reported_count {
-        return false;
-    }
-    headers
-        .iter()
-        .try_fold(0_usize, |total, (name, value)| {
-            if value.len() > MAX_HEADER_VALUE_BYTES {
-                return None;
-            }
-            total.checked_add(name.len())?.checked_add(value.len())
-        })
-        .is_some_and(|total| total <= MAX_HEADERS_BYTES)
-}
-
-pub(crate) fn normalize_authority(authority: &[u8], scheme: &[u8]) -> Option<String> {
-    let authority = str::from_utf8(authority).ok()?;
-    if authority.is_empty() {
-        return Some(String::new());
-    }
-    let lower = authority.to_ascii_lowercase();
-    let (host, port) = authority_parts(&lower)?;
-    let default_port = if scheme.eq_ignore_ascii_case(b"http") {
-        Some("80")
-    } else if scheme.eq_ignore_ascii_case(b"https") {
-        Some("443")
-    } else {
-        None
-    };
-    if port == default_port {
-        Some(host.to_owned())
-    } else {
-        Some(lower)
-    }
-}
-
-fn authority_parts(authority: &str) -> Option<(&str, Option<&str>)> {
-    if authority.starts_with('[') {
-        let close = authority.find(']')?;
-        let host = authority.get(..=close)?;
-        let address = authority.get(1..close)?.parse::<std::net::Ipv6Addr>().ok()?;
-        let _ = address;
-        let suffix = authority.get(close.saturating_add(1)..)?;
-        let port = if suffix.is_empty() {
-            None
-        } else {
-            Some(valid_authority_port(suffix.strip_prefix(':')?)?)
-        };
-        Some((host, port))
-    } else {
-        let mut colons = authority.match_indices(':');
-        let Some((index, _)) = colons.next() else {
-            return valid_reg_name(authority).then_some((authority, None));
-        };
-        if colons.next().is_some() {
-            return None;
-        }
-        let host = authority.get(..index)?;
-        let port = valid_authority_port(authority.get(index.saturating_add(1)..)?)?;
-        valid_reg_name(host).then_some((host, Some(port)))
-    }
-}
-
-fn valid_authority_port(port: &str) -> Option<&str> {
-    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    port.parse::<u16>().ok().map(|_| port)
-}
-
-fn valid_reg_name(host: &str) -> bool {
-    if host.is_empty() {
-        return false;
-    }
-    let bytes = host.as_bytes();
-    let mut index = 0;
-    while let Some(byte) = bytes.get(index).copied() {
-        if byte == b'%' {
-            if !bytes
-                .get(index.saturating_add(1)..index.saturating_add(3))
-                .is_some_and(|escape| escape.len() == 2 && escape.iter().all(u8::is_ascii_hexdigit))
-            {
-                return false;
-            }
-            index += 3;
-            continue;
-        }
-        if !(byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=".contains(&byte)) {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
-fn authority_host(authority: &str) -> &str {
-    if authority.starts_with('[') {
-        authority
-            .find(']')
-            .and_then(|close| authority.get(1..close))
-            .unwrap_or_default()
-    } else {
-        authority.split_once(':').map_or(authority, |(host, _)| host)
-    }
-}
-
-fn has_unsupported_content_encoding(headers: &[(String, Vec<u8>)]) -> bool {
-    headers
-        .iter()
-        .filter(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
-        .flat_map(|(_, value)| value.split(|byte| *byte == b','))
-        .map(trim_ascii)
-        .any(|encoding| !encoding.eq_ignore_ascii_case(b"identity"))
-}
-
-fn trim_ascii(mut value: &[u8]) -> &[u8] {
-    while value.first().is_some_and(u8::is_ascii_whitespace) {
-        value = value.get(1..).unwrap_or_default();
-    }
-    while value.last().is_some_and(u8::is_ascii_whitespace) {
-        value = value.get(..value.len().saturating_sub(1)).unwrap_or_default();
-    }
-    value
-}
-
-fn has_upgrade(headers: &[(String, Vec<u8>)]) -> bool {
-    headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("upgrade")
-            || (name.eq_ignore_ascii_case("connection")
-                && value
-                    .split(|byte| *byte == b',')
-                    .map(trim_ascii)
-                    .any(|token| token.eq_ignore_ascii_case(b"upgrade")))
-    })
-}
-
 fn request_inspection_incomplete(tx: &Transaction) -> bool {
     tx.inspection_incomplete() || tx.arguments_limit_reached()
 }
@@ -1800,15 +1646,19 @@ fn log_warn(message: &str) {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Lifecycle tests use fixed values.")]
 mod tests {
-    use std::{cell::Cell, rc::Rc};
+    use std::{cell::Cell, rc::Rc, sync::Arc};
 
+    use envoy_coraza_common::{config::Config, observability::Diagnostics, policy::Generation};
     use proxy_wasm::types::{Action, Status};
 
     use super::{
-        normalize_authority, request_authority, CorazaHttp, Lifecycle, RequestMode, RequestStage, ResponseStage,
-        TerminalOutcome, MAX_HEADER_COUNT, MAX_REQUEST_BODY_BYTES, MAX_ROOT_RETAINED_BODY_BYTES,
+        CorazaHttp, Lifecycle, RequestMode, RequestStage, ResponseStage, TerminalOutcome, MAX_HEADER_COUNT,
+        MAX_REQUEST_BODY_BYTES, MAX_ROOT_RETAINED_BODY_BYTES,
     };
-    use crate::{config::Config, policy::Generation};
+
+    fn compile(config: Config) -> Generation {
+        Generation::compile(config, Arc::new(Diagnostics::default()), |_| {}, |_, _| {}).expect("policy compiles")
+    }
 
     #[test]
     fn lifecycle_runs_each_http_phase_and_finalization_once() {
@@ -1881,7 +1731,7 @@ mod tests {
             br#"{"directives_map":{"p":["SecRequestBodyAccess Off","SecRule REQUEST_METHOD \"@streq POST\" \"id:91,phase:2,pass\""]},"default_directives":"p"}"#,
         )
         .expect("configuration is valid");
-        let generation = Rc::new(Generation::compile(config).expect("policy compiles"));
+        let generation = Rc::new(compile(config));
         let policy = generation.select("example.test").expect("default policy selected");
         let mut transaction = policy.waf.new_transaction();
         transaction.process_uri("/", "POST", "HTTP/1.1");
@@ -1939,67 +1789,6 @@ mod tests {
             "the trailer limit is checked even after phase 2 completed"
         );
         assert!(stream.lifecycle.finalized);
-    }
-
-    #[test]
-    fn authority_normalization_covers_case_default_ports_and_ipv6() {
-        assert_eq!(
-            normalize_authority(b"a.example:80", b"https").as_deref(),
-            Some("a.example:80"),
-            "port 80 is not default for HTTPS"
-        );
-        assert_eq!(
-            normalize_authority(b"a.example:443", b"http").as_deref(),
-            Some("a.example:443"),
-            "port 443 is not default for HTTP"
-        );
-        assert_eq!(
-            normalize_authority(b"WAF.EXAMPLE:80", b"http").as_deref(),
-            Some("waf.example")
-        );
-        assert_eq!(
-            normalize_authority(b"WAF.EXAMPLE:8443", b"https").as_deref(),
-            Some("waf.example:8443")
-        );
-        assert_eq!(
-            normalize_authority(b"[2001:DB8::1]:443", b"https").as_deref(),
-            Some("[2001:db8::1]")
-        );
-        assert_eq!(
-            normalize_authority(b"[2001:DB8::1]", b"http").as_deref(),
-            Some("[2001:db8::1]")
-        );
-    }
-
-    #[test]
-    fn malformed_and_missing_authority_paths_are_explicit() {
-        assert_eq!(
-            normalize_authority(b"\xff", b"http"),
-            None,
-            "invalid UTF-8 fails closed"
-        );
-        assert_eq!(
-            normalize_authority(b"a.example/path", b"http"),
-            None,
-            "path syntax is invalid"
-        );
-        assert_eq!(
-            normalize_authority(b"a.example:65536", b"http"),
-            None,
-            "port is out of range"
-        );
-        assert_eq!(normalize_authority(b"", b"http").as_deref(), Some(""));
-
-        let headers = vec![(":method".to_owned(), b"GET".to_vec())];
-        assert_eq!(
-            request_authority(&headers, Some(b"fallback.example")),
-            b"fallback.example"
-        );
-        assert_eq!(
-            request_authority(&headers, None),
-            b"",
-            "an absent authority stays empty"
-        );
     }
 
     #[test]
@@ -2080,7 +1869,7 @@ mod tests {
             br#"{"directives_map":{"p":["SecRequestBodyAccess On","SecRequestBodyLimit 64"]},"default_directives":"p"}"#,
         )
         .expect("the body policy is valid");
-        let generation = Rc::new(Generation::compile(config).expect("the policy compiles"));
+        let generation = Rc::new(compile(config));
         let policy = generation
             .select("example.test")
             .expect("the default policy is selected");

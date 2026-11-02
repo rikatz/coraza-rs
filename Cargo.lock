@@ -323,10 +323,18 @@ dependencies = [
 name = "envoy-coraza"
 version = "0.1.0"
 dependencies = [
+ "coraza",
+ "envoy-coraza-common",
+ "proxy-wasm 0.2.5 (git+https://github.com/Kuadrant/proxy-wasm-rust-sdk?rev=6ceedbbdd07a048a65d197c9bbb1f950884561fb)",
+]
+
+[[package]]
+name = "envoy-coraza-common"
+version = "0.1.0"
+dependencies = [
  "base64",
  "coraza",
  "miniz_oxide",
- "proxy-wasm 0.2.5 (git+https://github.com/Kuadrant/proxy-wasm-rust-sdk?rev=6ceedbbdd07a048a65d197c9bbb1f950884561fb)",
  "serde_json",
 ]
 
