@@ -1,0 +1,26 @@
+{
+  "repository_revision": "f75481ca871359a5e704146c5675846acff415ef",
+  "crs_test_revision": "e03a4f6dabc7a30ebd8c52c97d28a154f590a48f",
+  "crs_rules_pin": "v4.30.0 3d678a41fd5aade34760127fef5dd64fd7a77848913fc0f70dde0cf467c94427",
+  "envoy_image": "envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de",
+  "test_directory": "/tmp/tmp.UH0DK8MBUj/coreruleset/tests/regression/tests",
+  "runner_exit_status": 1,
+  "selected_tests": 5231,
+  "include_tests": null,
+  "marker_wait": "25ms",
+  "marker_max_retries": 100,
+  "go_ftw": "github.com/coreruleset/go-ftw/v2 v2.1.0",
+  "go_coraza": "github.com/corazawaf/coraza/v3 v3.8.1",
+  "policy_sha256": "efdece96253833e17374a3f18e1faa3e9ed44a141952448b53b5b6e8535fe6de",
+  "module_sha256": "9987cca044e733d448ebfbd5a51479625ee66c83fd68c735ad430166eeaa5ec8",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "go": "go version go1.27.3-X:nodwarf5 linux/amd64",
+  "commands": [
+    "make build-envoy-dynamic-crs",
+    "cargo build --locked --release -p coraza --example ftw_server_async --features async-server",
+    "go run . --target-addr 127.0.0.1 --target-port 10001 --marker-wait 25ms"
+  ],
+  "access_log_archive": "envoy-access.log.gz",
+  "access_log_archive_sha256": "19d4abb45e8ccfdd6ca978741d929dc8a5c5cc2c66b9e98e5444869e29a4198b",
+  "access_log_uncompressed_sha256": "6b0fb4be4382a5889693f9092987e164dac47a9878e9f94c4b6ff389a3f6ebab"
+}

@@ -1,0 +1,25 @@
+{
+  "repository_revision": "f75481ca871359a5e704146c5675846acff415ef",
+  "crs_test_revision": "e03a4f6dabc7a30ebd8c52c97d28a154f590a48f",
+  "envoy_image": "envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de",
+  "policy_sha256": "efdece96253833e17374a3f18e1faa3e9ed44a141952448b53b5b6e8535fe6de",
+  "marker_wait": "25ms",
+  "marker_max_retries": 100,
+  "runner_exit_status": 1,
+  "runner_outcome": {
+    "run": 5231,
+    "passed": 5163,
+    "failed": 68,
+    "944110-18": "passed with rules 944110, 944250, 949110, 980170"
+  },
+  "wrapper_exit_status": 2,
+  "wrapper_note": "The runner completed and wrote its full manifest/logs, but the enclosing shell was edited during execution and failed during post-run processing. The later native-rerun-20261103T100830Z invocation is the authoritative clean wrapper run.",
+  "commands": [
+    "make build-envoy-dynamic-crs",
+    "cargo build --locked --release -p coraza --example ftw_server_async --features async-server",
+    "go run . --target-addr 127.0.0.1 --target-port 10001 --marker-wait 25ms"
+  ],
+  "access_log_archive": "envoy-access.log.gz",
+  "access_log_archive_sha256": "01095a80a49f65560306a00ac9b4b254d1d9444b0e895dba7c9e950ac3b9af29",
+  "access_log_uncompressed_sha256": "71785b16716bbaae61a5168ee2dccf698229d315d0cde54a6b6f0263cf65da67"
+}
