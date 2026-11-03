@@ -2819,5 +2819,29 @@
         "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
       }
     }
+  },
+  "supplementary_run_dispositions": {
+    "934100-1": {
+      "source_run": "native-rerun-20261103T020831Z",
+      "scope": "supplementary sibling run only",
+      "native_outcome": "fail",
+      "in_original_68_failures": false,
+      "in_authoritative_rerun": false,
+      "classification": "connector-or-harness",
+      "attribution": "undecided",
+      "candidate_class": "late/lost audit-line hypothesis (unconfirmed)",
+      "observed_statuses": [
+        200
+      ],
+      "observed_paths": [
+        "/get?foo=_%24%24ND_FUNC%24%24_"
+      ],
+      "native_triggered_rules": [
+        []
+      ],
+      "adjacent_passing_test": "949110-1",
+      "adjacent_passing_test_logged_rule": 934100,
+      "evidence_note": "Adjacent test 949110-1 logs rule 934100 in passing runs; a late or lost audit line is a hypothesis, not an attribution."
+    }
   }
 }

@@ -47,7 +47,10 @@ per-test manifests and failure lists are preserved under
 - `native-rerun-20261103T020831Z/`: earlier completed full-suite run (5,163
   passed, 68 failed; `944110-18` passed). Its runner completed, but wrapper
   post-processing was interrupted; the manifest and compressed log are retained
-  as supplementary evidence.
+  as supplementary evidence. This sibling run also failed `934100-1`, which is
+  absent from both the original 68-failure set and the authoritative
+  `native-rerun-20261103T100830Z` run; it is recorded separately in the
+  divergence ledger and is not treated as an authoritative shared failure.
 - `native-rerun-20261103T100830Z/`: fresh full-suite manifest, failure list,
   marker-bracketed Envoy access log (`envoy-access.log.gz`), runner log, and run
   metadata. The 54 MiB access log is gzip archived; its decompressed SHA-256 is
@@ -102,6 +105,11 @@ The exact set arithmetic is preserved in
   case (`ReadTimeout=30s`) and a targeted retry of `950020-2` also timed out.
   This is the known unsupported compressed-response path, not a claimed pass.
   The Wasm run did pass `944110-18` and all other selected cases completed.
+- The supplementary `native-rerun-20261103T020831Z` failure `934100-1` is a
+  sibling-run-only observation: it was not in the original 68 failures or the
+  authoritative 67-failure rerun. The adjacent `949110-1` logs rule 934100 in
+  passing runs, leaving a late/lost audit-line hypothesis; exact attribution is
+  undecided and no traffic was rerun for this review.
 
 The divergence ledger now records expected-status assertions (null where FTW
 does not assert a status), observed status/path, triggered-rule arrays for the
