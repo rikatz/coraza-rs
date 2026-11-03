@@ -30,6 +30,7 @@ connectors prohibit rule-body spill to disk.
 | --- | ---: | ---: | ---: | ---: |
 | Standalone Coraza FTW server, baseline | 327 files / 5,231 tests / 5,237 stages | 5,215 | 16 | 0 / 0 |
 | Native filter in Envoy | 327 files / 5,231 tests / 5,237 stages | 5,163 | 68 | 0 / 0 |
+| Native filter in Envoy, deterministic full rerun (`native-rerun-20261103T100830Z`) | 327 files / 5,231 tests / 5,237 stages | 5,164 | 67 | 0 / 0 |
 | Wasm full run | Stopped at `950020-1` | — | — | — |
 | Wasm focused comparison | 67 of the 68 native-failed IDs | 1 | 66 | 0 / 0 |
 
@@ -43,9 +44,35 @@ per-test manifests and failure lists are preserved under
 - `engine-same-memory-policy.json` / `engine-same-memory-policy-failed.txt`:
   engine baseline with the Envoy-compatible no-spill limit.
 - `native-full.json` / `native-failed.txt`: all native test outcomes.
+- `native-rerun-20261103T020831Z/`: earlier completed full-suite run (5,163
+  passed, 68 failed; `944110-18` passed). Its runner completed, but wrapper
+  post-processing was interrupted; the manifest and compressed log are retained
+  as supplementary evidence.
+- `native-rerun-20261103T100830Z/`: fresh full-suite manifest, failure list,
+  marker-bracketed Envoy access log (`envoy-access.log.gz`), runner log, and run
+  metadata. The 54 MiB access log is gzip archived; its decompressed SHA-256 is
+  recorded in `run-metadata.json`. The runner exits nonzero for the 67 remaining
+  CRS expectation failures; all 5,231 tests ran and the failure set introduced
+  no new IDs.
 - `wasm-native-failures-except-950020-2.json` / `wasm-failed.txt`: focused
   Wasm outcomes for the native failure set excluding the timeout case.
 - `policy.json`: the policy bytes used by native and Wasm.
+
+The checked-in reproduction path is `make test-envoy-dynamic-ftw`, implemented
+by `examples/envoy-coraza-dynamic/test-ftw.sh`. With no selection it runs the
+full pinned 5,231-case suite and writes a new `native-rerun-*` directory here;
+it preserves the historical artifacts above. It checks out CRS tests at
+`e03a4f6dabc7a30ebd8c52c97d28a154f590a48f`, uses the pinned module policy and
+Envoy image, collects marker-bracketed Envoy status/path lines, and spaces go-ftw
+marker retries by 25 ms (at most 100 attempts). The manifest also records
+per-test expected/observed statuses and triggered rules where the failed test
+and access-log brackets provide them. `enrich-ftw-ledger.py` joins those fields
+to engine/Wasm outcomes and leaves unresolved cases explicitly undecided.
+
+CI runs a bounded ten-case set: five prior shared failures and five previously
+passing controls. Four residual failures are allow-listed; `944110-18` must pass
+under the deterministic marker wait. The job detects new failures but is not a
+full-suite or native/Wasm parity claim.
 
 ### Failure attribution
 
@@ -65,17 +92,32 @@ The exact set arithmetic is preserved in
   focused Wasm run also passed it. See
   `native-focused-944110-18.json`. The complete native manifest retains the
   original failure rather than rewriting history.
+- The deterministic full rerun and the CI subset both pass `944110-18` with
+  triggered rules `[944110, 944250, 949110, 980170]`; the marker-bracketed
+  Envoy access log records `POST /post` with status 200. The runner now spaces
+  marker retries by 25 ms, bounded to 100 attempts; the historical full-run
+  failure remains preserved above.
 - **`950020-2` remains INCOMPLETE for Wasm attribution.** Native reported a
   failure in the full run; Wasm's full run timed out in the response-compression
   case (`ReadTimeout=30s`) and a targeted retry of `950020-2` also timed out.
   This is the known unsupported compressed-response path, not a claimed pass.
   The Wasm run did pass `944110-18` and all other selected cases completed.
 
-This fulfills the native full-suite run and attempts the same native failures
-against Wasm. The Wasm suite is not a full 5,231-test pass, and the 54 shared
-Envoy-path failures are not attributed more finely than “common connector or
-FTW/Envoy harness behavior” by this run. A complete Native-vs-Wasm outcome diff
-is still out of scope per decision 14.
+The divergence ledger now records expected-status assertions (null where FTW
+does not assert a status), observed status/path, triggered-rule arrays for the
+native, Wasm and standalone engine, and a disposition for each of the 54 shared
+failures. Eleven have status 400 with no parsed path, a candidate Envoy/harness
+pre-routing rejection; the other cases have varied 200/4xx status-path pairs
+but no native or Wasm expected-rule match. All 54 are classified as connector-or-harness, not
+engine-wide, with exact attribution explicitly **undecided** because the
+filter-visible request bytes were not retained. The ledger names the bounded
+filter-input capture needed to decide those cases. A complete Native-vs-Wasm
+outcome diff remains a later decision-14 follow-up.
+
+The full native suite and the ten-case CI regression subset both ran through the
+checked-in path. CI completed with four allow-listed baseline failures, no new
+failures, and `944110-18` passed; the subset is not a full CRS conformance or
+parity claim.
 
 ## 2. Benchmarks and deferred stress items
 

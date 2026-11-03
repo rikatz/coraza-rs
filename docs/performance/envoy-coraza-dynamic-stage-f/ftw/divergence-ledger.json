@@ -307,7 +307,26 @@
         944250,
         949110,
         980170
-      ]
+      ],
+      "deterministic_native_full_rerun": {
+        "outcome": "pass",
+        "triggered_rules": [
+          [
+            944110,
+            944250,
+            949110,
+            980170
+          ]
+        ],
+        "marker_wait": "25ms",
+        "marker_max_retries": 100,
+        "observed_requests": [
+          {
+            "status": 200,
+            "path": "/post"
+          }
+        ]
+      }
     },
     "950020-2": {
       "native": "failed in full run",
@@ -347,6 +366,2458 @@
       "first_timeout": "950020-1",
       "read_timeout_seconds": 30,
       "status": "INCOMPLETE"
+    }
+  },
+  "shared_failure_classification": {
+    "source": "native-full.json, wasm-native-failures-except-950020-2.json, engine-standalone.json",
+    "native_current_manifest": "docs/performance/envoy-coraza-dynamic-stage-f/ftw/native-rerun-20261103T100830Z/native.json",
+    "native_current_access_log": "docs/performance/envoy-coraza-dynamic-stage-f/ftw/native-rerun-20261103T100830Z/envoy-access.log.gz",
+    "native_outcome": "fail",
+    "wasm_outcome": "fail",
+    "engine_outcome": "pass",
+    "classification": "connector-or-harness; exact attribution remains undecided",
+    "attribution": "undecided",
+    "engine_wide_failures_in_this_set": 0,
+    "candidate_class_counts": {
+      "Envoy/harness parser before routing (candidate)": 11,
+      "shared-connector-or-harness": 43
+    },
+    "test_dispositions": {
+      "911100-5": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            911100,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "911100-7": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            911100,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920100-10": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            911100,
+            920100,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920100-14": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            911100,
+            920100,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920100-16": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920100,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920100-4": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": 200,
+        "expected_status_asserted": true,
+        "expected_statuses": [
+          200
+        ],
+        "observed_status": 501,
+        "observed_statuses": [
+          501
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          [
+            200009,
+            911100,
+            920350,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            200009,
+            911100,
+            920350,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            911100,
+            920350,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920171-2": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          [
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920171,
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920171-3": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          [
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920171,
+            920273,
+            920640,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920181-1": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": 200,
+        "expected_status_asserted": true,
+        "expected_statuses": [
+          200
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          []
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920210-2": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920210,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920210-3": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920210,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920210-4": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920210,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920210-6": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920210,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920210-7": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920210,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920274-2": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/index.html?test=test1"
+        ],
+        "native_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          []
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920274-3": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get?test=test1HI"
+        ],
+        "native_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          []
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920274-5": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get?test=test1HI"
+        ],
+        "native_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920274,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          []
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920280-1": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 426,
+        "observed_statuses": [
+          426
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920280,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920540-4": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          [
+            920273,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920273,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920273,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920273,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "920540-5": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/?testarg=%5Cu0061lert"
+        ],
+        "native_triggered_rules": [
+          [
+            920273,
+            920274,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920273,
+            920274,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920273,
+            920274,
+            920540,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920273,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "921140-1": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": 400,
+        "expected_status_asserted": true,
+        "expected_statuses": [
+          400
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          []
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "931130-24": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get?x=jar:file:/path/to/myApp.jar!/com/example/data.txt"
+        ],
+        "native_triggered_rules": [
+          [
+            920273,
+            920274,
+            931130,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920273,
+            920274,
+            931130,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920273,
+            920274,
+            931130,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920273,
+            931130,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932161-10": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            930121,
+            932161,
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932161-11": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932161,
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932161-12": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932161,
+            932206,
+            932237,
+            932239,
+            933100,
+            941101,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932161-7": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            930121,
+            932161,
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932161-9": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            930121,
+            932161,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932200-13": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get?host=www.google.com;/bin/ca?+/et*/passwd"
+        ],
+        "native_triggered_rules": [
+          [
+            920273,
+            920274,
+            932190,
+            932200,
+            942432,
+            942440,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920273,
+            920274,
+            932190,
+            932200,
+            942432,
+            942440,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920273,
+            920274,
+            932190,
+            932200,
+            942432,
+            942440,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920273,
+            932190,
+            932200,
+            942432,
+            942440,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932207-1": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 426,
+        "observed_statuses": [
+          426
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932207,
+            932237,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932207-2": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 426,
+        "observed_statuses": [
+          426
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932207,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932207-7": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 426,
+        "observed_statuses": [
+          426
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932207,
+            932237,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932237-10": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932237-4": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932239-19": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932239-27": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932239-29": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932239-6": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932206,
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932239-7": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            932239,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932300-10": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/post"
+        ],
+        "native_triggered_rules": [
+          [
+            920272,
+            920273,
+            932235,
+            932236,
+            932300,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920272,
+            920273,
+            932235,
+            932236,
+            932300,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920272,
+            920273,
+            932235,
+            932236,
+            932300,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920272,
+            920273,
+            932235,
+            932236,
+            932300,
+            942432,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "932390-9": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932390,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "933120-2": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/post"
+        ],
+        "native_triggered_rules": [
+          [
+            920510,
+            933120,
+            949110,
+            980170
+          ]
+        ],
+        "native_current_triggered_rules": [
+          [
+            920510,
+            933120,
+            949110,
+            980170
+          ]
+        ],
+        "wasm_triggered_rules": [
+          [
+            920510,
+            933120,
+            949110,
+            980170
+          ]
+        ],
+        "engine_triggered_rules": [
+          [
+            920510,
+            933120,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "934120-23": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920272,
+            920273,
+            931130,
+            934120,
+            942460,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "934120-24": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920272,
+            920273,
+            931130,
+            934120,
+            942460,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "934120-25": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920272,
+            920273,
+            931130,
+            934120,
+            942460,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "934120-26": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920272,
+            920273,
+            931130,
+            934120,
+            942460,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "934120-39": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920272,
+            920273,
+            931130,
+            934110,
+            934120,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "941101-1": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            941101,
+            941110,
+            941160,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "941110-4": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            932237,
+            941101,
+            941110,
+            941160,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "941120-49": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            941101,
+            941120,
+            941160,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "941120-50": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            941101,
+            941120,
+            941160,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "941210-6": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 426,
+        "observed_statuses": [
+          426
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920273,
+            921130,
+            932190,
+            932200,
+            941160,
+            941170,
+            941181,
+            941210,
+            941320,
+            942100,
+            942120,
+            942180,
+            942370,
+            942430,
+            942431,
+            942432,
+            942440,
+            942460,
+            942520,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "942280-3": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 200,
+        "observed_statuses": [
+          200
+        ],
+        "observed_paths": [
+          "/get"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            942280,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "944200-1": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "shared-connector-or-harness",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 426,
+        "observed_statuses": [
+          426
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            920250,
+            920270,
+            920271,
+            920272,
+            920273,
+            920451,
+            942440,
+            942460,
+            944200,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "Marker-bracketed status and path are recorded, but the filter-visible normalized request and the reason a shared rule did not trigger are not; do not attribute this to connector or harness yet.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      },
+      "949110-4": {
+        "classification": "connector-or-harness",
+        "attribution": "undecided",
+        "candidate_class": "Envoy/harness parser before routing (candidate)",
+        "native_outcome": "fail",
+        "historical_native_outcome": "fail",
+        "native_current_outcome": "fail",
+        "wasm_outcome": "fail",
+        "engine_outcome": "pass",
+        "expected_status": null,
+        "expected_status_asserted": false,
+        "expected_statuses": [
+          null
+        ],
+        "observed_status": 400,
+        "observed_statuses": [
+          400
+        ],
+        "observed_paths": [
+          "-"
+        ],
+        "native_triggered_rules": [
+          []
+        ],
+        "native_current_triggered_rules": [
+          []
+        ],
+        "wasm_triggered_rules": [
+          []
+        ],
+        "engine_triggered_rules": [
+          [
+            911100,
+            920100,
+            949110,
+            980170
+          ]
+        ],
+        "evidence_gap": "The Envoy access log records status 400 with no parsed path; this points to a request-parser or pre-routing harness rejection, but filter-visible bytes are needed to confirm it.",
+        "evidence_needed_to_decide": "Capture the bounded request as received at the filter boundary and its marker-bracketed Envoy status/log slice, then compare those bytes and triggered rules with the engine-standalone case."
+      }
     }
   }
 }
