@@ -1,0 +1,53 @@
+{
+  "mode": "conformance",
+  "ok": false,
+  "strict": true,
+  "test_dir": "/tmp/opencode/coreruleset-stage-f/tests/regression/tests",
+  "include_tests": "^911100-5$",
+  "expected": {
+    "rules": 669,
+    "files": 327,
+    "tests": 5231,
+    "stages": 5237
+  },
+  "counts": {
+    "files": {
+      "inventory": 327,
+      "selected": 1
+    },
+    "tests": {
+      "inventory": 5231,
+      "selected": 1
+    },
+    "stages": {
+      "inventory": 5237,
+      "selected": 1
+    },
+    "rules": {
+      "loaded": 669
+    }
+  },
+  "results": {
+    "run": 1,
+    "passed": 0,
+    "success": [],
+    "failed": [
+      "911100-5"
+    ],
+    "skipped": [],
+    "ignored": [],
+    "forced_pass": [],
+    "forced_failed": [],
+    "runtime_ns": {
+      "911100-5": 4915579
+    },
+    "triggered_rules": {
+      "911100-5": [
+        []
+      ]
+    }
+  },
+  "failures": [
+    "1 test(s) failed"
+  ]
+}

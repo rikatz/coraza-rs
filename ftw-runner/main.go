@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ type options struct {
 	mode           runMode
 	rulesFile      string
 	testDir        string
+	targetAddr     string
+	targetPort     int
+	logFile        string
+	includeTests   string
 	maxTests       int
 	failedOut      string
 	manifestPath   string
@@ -79,6 +84,14 @@ func (o options) validate() error {
 		if o.manifestPath == "" {
 			return errors.New("--manifest is required in conformance mode")
 		}
+		if o.targetPort < 1 || o.targetPort > 65535 {
+			return errors.New("--target-port must be between 1 and 65535")
+		}
+		if o.includeTests != "" {
+			if _, err := regexp.Compile(o.includeTests); err != nil {
+				return fmt.Errorf("invalid --include-tests regular expression: %w", err)
+			}
+		}
 		return nil
 	}
 	if o.expectedRules >= 0 || o.expectedFiles >= 0 || o.expectedTests >= 0 || o.expectedStages >= 0 {
@@ -98,6 +111,10 @@ func run() error {
 	// Parse command-line flags
 	rulesFile := flag.String("rules", "", "Path to CRS rules file (e.g., crs-test.conf)")
 	modeFlag := flag.String("mode", string(modeConformance), "Run mode: conformance or health-only")
+	targetAddr := flag.String("target-addr", "127.0.0.1", "Address where go-ftw sends requests")
+	targetPort := flag.Int("target-port", serverPort, "Port where go-ftw sends requests")
+	logFile := flag.String("log-file", "", "Use this WAF log file instead of a temporary file")
+	includeTests := flag.String("include-tests", "", "Run only test IDs matching this regular expression")
 	maxTests := flag.Int("max-tests", 0, "Maximum number of test files to run (0 = all files)")
 	testDir := flag.String("test-dir", "", "Directory searched recursively for FTW tests (required in conformance mode)")
 	failedOut := flag.String("failed-out", "", "File to write the IDs of the failed tests to, one per line")
@@ -116,6 +133,10 @@ func run() error {
 		mode:           mode,
 		rulesFile:      *rulesFile,
 		testDir:        *testDir,
+		targetAddr:     *targetAddr,
+		targetPort:     *targetPort,
+		logFile:        *logFile,
+		includeTests:   *includeTests,
 		maxTests:       *maxTests,
 		failedOut:      *failedOut,
 		manifestPath:   *manifestPath,
@@ -160,13 +181,25 @@ func startServer(opts options) (*Server, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create audit directory: %w", err)
 	}
-	serverLogfile = filepath.Join(auditDir, "audit.log")
 	cleanupDir := func() {
 		if err := os.RemoveAll(auditDir); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to remove audit directory %s: %v\n", auditDir, err)
 		}
 	}
-
+	serverLogfile = opts.logFile
+	if serverLogfile == "" {
+		serverLogfile = filepath.Join(auditDir, "audit.log")
+	} else {
+		file, err := os.OpenFile(serverLogfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			cleanupDir()
+			return nil, nil, fmt.Errorf("open log file %s: %w", serverLogfile, err)
+		}
+		if err := file.Close(); err != nil {
+			cleanupDir()
+			return nil, nil, fmt.Errorf("close log file %s: %w", serverLogfile, err)
+		}
+	}
 	fmt.Println("Starting FTW server...")
 	server := &Server{
 		port:          serverPort,
@@ -342,16 +375,22 @@ func stopRedirects(_ *http.Request, _ []*http.Request) error {
 }
 
 // createFTWConfig creates the FTW configuration in memory (no file I/O)
-func createFTWConfig() string {
+func createFTWConfig(targetAddr string, targetPort int) string {
+	if targetAddr == "" {
+		targetAddr = "127.0.0.1"
+	}
+	if targetPort == 0 {
+		targetPort = serverPort
+	}
 	return fmt.Sprintf(`# Auto-generated FTW configuration for coraza-rs
 logfile: %s
 logmarkerheadername: X-CRS-Test
 testoverride:
   input:
-    dest_addr: "127.0.0.1"
+    dest_addr: %q
     port: %d
 mode: "default"
-`, serverLogfile, serverPort)
+`, serverLogfile, targetAddr, targetPort)
 }
 
 // inventory is the complete set of FTW files below the configured directory.
@@ -379,6 +418,36 @@ func (inv inventory) selectFiles(maxFiles int) inventory {
 		}
 	}
 	return selected
+}
+
+func filterTests(inv inventory, pattern string) (inventory, error) {
+	if pattern == "" {
+		return inv, nil
+	}
+	include, err := regexp.Compile(pattern)
+	if err != nil {
+		return inventory{}, err
+	}
+	selected := inventory{}
+	for _, ftwTest := range inv.TestFiles {
+		filtered := *ftwTest
+		filtered.Tests = nil
+		for _, testCase := range ftwTest.Tests {
+			if include.MatchString(testCase.IdString()) {
+				filtered.Tests = append(filtered.Tests, testCase)
+				selected.Tests++
+				selected.Stages += len(testCase.Stages)
+			}
+		}
+		if len(filtered.Tests) != 0 {
+			selected.TestFiles = append(selected.TestFiles, &filtered)
+		}
+	}
+	selected.Files = len(selected.TestFiles)
+	if selected.Tests == 0 {
+		return inventory{}, fmt.Errorf("test ID expression %q matched no cases", pattern)
+	}
+	return selected, nil
 }
 
 func isYAMLTest(path string) bool {
@@ -485,6 +554,10 @@ func executeConformance(opts options, server *Server, manifest *resultManifest) 
 	}
 
 	selected := inv.selectFiles(opts.maxTests)
+	selected, err = filterTests(selected, opts.includeTests)
+	if err != nil {
+		return fmt.Errorf("select tests: %w", err)
+	}
 	manifest.Counts.Files.Selected = selected.Files
 	manifest.Counts.Tests.Selected = selected.Tests
 	manifest.Counts.Stages.Selected = selected.Stages
@@ -506,7 +579,7 @@ func executeConformance(opts options, server *Server, manifest *resultManifest) 
 	fmt.Printf("Server rules loaded: %d\n", serverInventory.RulesLoaded)
 
 	out := output.NewOutput("normal", os.Stdout)
-	res, err := runFTWTests(selected.TestFiles, out)
+	res, err := runFTWTests(selected.TestFiles, out, opts)
 	if err != nil {
 		return err
 	}
@@ -516,12 +589,16 @@ func executeConformance(opts options, server *Server, manifest *resultManifest) 
 
 	totalFailed := res.Stats.TotalFailed()
 	manifest.Results = runResults{
-		Run:          res.Stats.Run,
-		Passed:       len(res.Stats.Success),
-		Failed:       res.Stats.Failed,
-		Skipped:      res.Stats.Skipped,
-		Ignored:      res.Stats.Ignored,
-		ForcedFailed: res.Stats.ForcedFail,
+		Run:            res.Stats.Run,
+		Passed:         len(res.Stats.Success),
+		Success:        res.Stats.Success,
+		Failed:         res.Stats.Failed,
+		Skipped:        res.Stats.Skipped,
+		Ignored:        res.Stats.Ignored,
+		ForcedPass:     res.Stats.ForcedPass,
+		ForcedFailed:   res.Stats.ForcedFail,
+		RunTime:        res.Stats.RunTime,
+		TriggeredRules: res.Stats.TriggeredRules,
 	}
 
 	// Report results
@@ -556,12 +633,12 @@ func executeConformance(opts options, server *Server, manifest *resultManifest) 
 }
 
 // runFTWTests executes the selected files using go-ftw.
-func runFTWTests(tests []*test.FTWTest, out *output.Output) (*runner.TestRunContext, error) {
+func runFTWTests(tests []*test.FTWTest, out *output.Output, opts options) (*runner.TestRunContext, error) {
 	// Set up logging
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
 	// Create configuration in memory (no file I/O)
-	cfg, err := config.NewConfigFromString(createFTWConfig())
+	cfg, err := config.NewConfigFromString(createFTWConfig(opts.targetAddr, opts.targetPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
@@ -606,14 +683,15 @@ func checkRunComplete(expected, run int) error {
 
 // resultManifest is the machine-readable conformance result.
 type resultManifest struct {
-	Mode     string           `json:"mode"`
-	OK       bool             `json:"ok"`
-	Strict   bool             `json:"strict"`
-	TestDir  string           `json:"test_dir"`
-	Expected expectedManifest `json:"expected"`
-	Counts   countsManifest   `json:"counts"`
-	Results  runResults       `json:"results"`
-	Failures []string         `json:"failures"`
+	Mode         string           `json:"mode"`
+	OK           bool             `json:"ok"`
+	Strict       bool             `json:"strict"`
+	TestDir      string           `json:"test_dir"`
+	IncludeTests string           `json:"include_tests,omitempty"`
+	Expected     expectedManifest `json:"expected"`
+	Counts       countsManifest   `json:"counts"`
+	Results      runResults       `json:"results"`
+	Failures     []string         `json:"failures"`
 }
 
 type expectedManifest struct {
@@ -640,19 +718,24 @@ type ruleCount struct {
 }
 
 type runResults struct {
-	Run          int      `json:"run"`
-	Passed       int      `json:"passed"`
-	Failed       []string `json:"failed"`
-	Skipped      []string `json:"skipped"`
-	Ignored      []string `json:"ignored"`
-	ForcedFailed []string `json:"forced_failed"`
+	Run            int                      `json:"run"`
+	Passed         int                      `json:"passed"`
+	Success        []string                 `json:"success"`
+	Failed         []string                 `json:"failed"`
+	Skipped        []string                 `json:"skipped"`
+	Ignored        []string                 `json:"ignored"`
+	ForcedPass     []string                 `json:"forced_pass"`
+	ForcedFailed   []string                 `json:"forced_failed"`
+	RunTime        map[string]time.Duration `json:"runtime_ns"`
+	TriggeredRules map[string][][]uint      `json:"triggered_rules"`
 }
 
 func newResultManifest(opts options) resultManifest {
 	return resultManifest{
-		Mode:    string(opts.mode),
-		Strict:  true,
-		TestDir: opts.testDir,
+		Mode:         string(opts.mode),
+		Strict:       true,
+		TestDir:      opts.testDir,
+		IncludeTests: opts.includeTests,
 		Expected: expectedManifest{
 			Rules:  optionalCount(opts.expectedRules),
 			Files:  optionalCount(opts.expectedFiles),
@@ -660,10 +743,14 @@ func newResultManifest(opts options) resultManifest {
 			Stages: optionalCount(opts.expectedStages),
 		},
 		Results: runResults{
-			Failed:       []string{},
-			Skipped:      []string{},
-			Ignored:      []string{},
-			ForcedFailed: []string{},
+			Failed:         []string{},
+			Skipped:        []string{},
+			Ignored:        []string{},
+			Success:        []string{},
+			ForcedPass:     []string{},
+			ForcedFailed:   []string{},
+			RunTime:        map[string]time.Duration{},
+			TriggeredRules: map[string][][]uint{},
 		},
 		Failures: []string{},
 	}

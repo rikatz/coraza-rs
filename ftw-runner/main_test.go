@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coreruleset/go-ftw/v2/config"
 )
 
 const oneTestYAML = `meta:
@@ -86,11 +88,23 @@ func TestOptionsValidate(t *testing.T) {
 		mode:          modeConformance,
 		testDir:       "tests",
 		rulesFile:     "rules.conf",
+		targetAddr:    "127.0.0.1",
+		targetPort:    serverPort,
 		manifestPath:  "manifest.json",
 		expectedRules: -1, expectedFiles: -1, expectedTests: -1, expectedStages: -1,
 	}
 	if err := valid.validate(); err != nil {
 		t.Fatalf("validate() error = %v", err)
+	}
+	invalidPort := valid
+	invalidPort.targetPort = 65536
+	if err := invalidPort.validate(); err == nil || !strings.Contains(err.Error(), "--target-port") {
+		t.Fatalf("validate() error = %v, want invalid target-port rejection", err)
+	}
+	invalidInclude := valid
+	invalidInclude.includeTests = "["
+	if err := invalidInclude.validate(); err == nil || !strings.Contains(err.Error(), "--include-tests") {
+		t.Fatalf("validate() error = %v, want invalid include expression rejection", err)
 	}
 
 	missingDir := valid
@@ -123,6 +137,21 @@ func TestOptionsValidate(t *testing.T) {
 	healthWithExpectation.expectedTests = 1
 	if err := healthWithExpectation.validate(); err == nil || !strings.Contains(err.Error(), "only valid in conformance mode") {
 		t.Fatalf("validate() error = %v, want expectation rejection", err)
+	}
+}
+
+func TestCreateFTWConfigUsesTargetAndLogFile(t *testing.T) {
+	previousLogfile := serverLogfile
+	t.Cleanup(func() { serverLogfile = previousLogfile })
+	serverLogfile = "/tmp/ftw.log"
+	content := createFTWConfig("127.0.0.1", 10001)
+	for _, want := range []string{"logfile: /tmp/ftw.log", `dest_addr: "127.0.0.1"`, "port: 10001"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("FTW config %q does not contain %q", content, want)
+		}
+	}
+	if _, err := config.NewConfigFromString(content); err != nil {
+		t.Fatalf("NewConfigFromString() error = %v", err)
 	}
 }
 
@@ -197,6 +226,26 @@ func TestSelectFilesLimitsFilesAndReportsAllCountsSeparately(t *testing.T) {
 	}
 	if all := inv.selectFiles(0); all.Files != 2 || all.Tests != 3 || all.Stages != 5 {
 		t.Fatalf("selectFiles(0) = %+v, want the full inventory", all)
+	}
+}
+
+func TestFilterTestsSelectsCasesWithoutMutatingInventory(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "a.yaml", oneTestYAML)
+	writeTestFile(t, dir, "b.yaml", twoTestYAML)
+	inventory, err := loadInventory(dir)
+	if err != nil {
+		t.Fatalf("loadInventory() error = %v", err)
+	}
+	selected, err := filterTests(inventory, `1002-2$`)
+	if err != nil {
+		t.Fatalf("filterTests() error = %v", err)
+	}
+	if selected.Files != 1 || selected.Tests != 1 || selected.Stages != 2 {
+		t.Fatalf("selected = %+v, want 1 file, 1 test, 2 stages", selected)
+	}
+	if inventory.Files != 2 || inventory.Tests != 3 || inventory.Stages != 5 {
+		t.Fatalf("filterTests mutated original inventory: %+v", inventory)
 	}
 }
 

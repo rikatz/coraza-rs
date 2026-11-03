@@ -1,0 +1,32 @@
+# BuildKit uses the target platform for this stage. The Envoy base is pinned and
+# supplies the same glibc as the runtime image, including for arm64 builds.
+ARG ENVOY_IMAGE=envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de
+FROM ${ENVOY_IMAGE} AS build
+
+USER root
+ARG RUST_VERSION=1.99.1
+ARG CARGO_FEATURES=
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates clang curl build-essential git libclang-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 --silent --show-error --fail https://sh.rustup.rs \
+        | sh -s -- --yes --profile minimal --default-toolchain "${RUST_VERSION}"
+
+ENV PATH=/root/.cargo/bin:$PATH
+WORKDIR /src
+COPY . .
+RUN if [ -n "${CARGO_FEATURES}" ]; then \
+        cargo build --locked --release -p envoy-coraza-dynamic --features "${CARGO_FEATURES}"; \
+    else \
+        cargo build --locked --release -p envoy-coraza-dynamic; \
+    fi
+RUN { rustc --version; clang --version | head -n 1; printf 'features=%s\n' "${CARGO_FEATURES:-default}"; } > /build-info.txt
+
+FROM scratch AS artifacts
+COPY --from=build /src/target/release/libenvoy_coraza_dynamic.so /coraza-rs-dynamic.so
+COPY --from=build /build-info.txt /toolchain.txt
+
+FROM ${ENVOY_IMAGE} AS runtime
+ENV ENVOY_DYNAMIC_MODULES_SEARCH_PATH=/opt/envoy/modules
+RUN install -d -o root -g root -m 0555 /opt/envoy/modules
+COPY --from=build --chown=0:0 --chmod=0444 /src/target/release/libenvoy_coraza_dynamic.so /opt/envoy/modules/libenvoy_coraza_dynamic.so

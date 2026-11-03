@@ -1,0 +1,2322 @@
+{
+  "metadata": {
+    "artifacts": {
+      "native_crs": {
+        "provenance": {
+          "clang_version": "Ubuntu clang version 14.0.0-1ubuntu1.1",
+          "enabled_features": [
+            "embed-crs"
+          ],
+          "rust_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+          "sdk_commit": "9e5580933739775e8bce696a57a2e1bc99368f23",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        "sha256": "9a41a1f47fd8e880f2e48096e2191a67ebc7163363565ff06b44a7e06d7aa85b"
+      },
+      "native_default": {
+        "provenance": {
+          "clang_version": "Ubuntu clang version 14.0.0-1ubuntu1.1",
+          "enabled_features": [],
+          "rust_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+          "sdk_commit": "9e5580933739775e8bce696a57a2e1bc99368f23",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        "sha256": "c04d20c8a35663a995aaf502954a34d97d941f467a4ddba87eee044e2a12e86f"
+      },
+      "wasm_crs": {
+        "sha256": "9d018ea984bcc59369a254c5ca7d698e4f84484e9fb903d2bb5f7b466416236d"
+      },
+      "wasm_default": {
+        "sha256": "95fc79dcba19e87ab5605d02d4ab2308fa4ec5bf1026a615588e24112698b701"
+      }
+    },
+    "backend_image": "coraza-rs-stage-f-bench-backend:local",
+    "backend_image_id": "sha256:18ed7967a64a929e7bfe2b9b1993e58e745a047edf8262eb05a21e7c0654cc3a",
+    "benchmark_runner_sha256": "0c47edae03e355fd20651656b6a470cbdf6d43bcab256d0222a1a364b37e1887",
+    "crs_pin": "v4.30.0 3d678a41fd5aade34760127fef5dd64fd7a77848913fc0f70dde0cf467c94427",
+    "crs_test_checkout_commit": "e03a4f6dabc7a30ebd8c52c97d28a154f590a48f",
+    "docker_buildx": "github.com/docker/buildx v0.38.1 0dbe87f36ed472fe36b6796c3f70b4210a731fc5",
+    "envoy_image": "envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de",
+    "host": {
+      "cpus": [
+        0,
+        1
+      ],
+      "machine": "x86_64",
+      "system": "Linux-7.2.12-200.fc44.x86_64-x86_64-with-glibc2.43"
+    },
+    "host_toolchain": {
+      "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+      "clang": "clang version 22.1.8 (Fedora 22.1.8-4.fc44)",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+    },
+    "offered_load": {
+      "concurrency": 16,
+      "fragmented_upload_bytes": 65536,
+      "fragmented_upload_requests": 32,
+      "http2_requests": 60,
+      "large_body_bytes": 524288,
+      "large_body_requests": 12,
+      "multiworker_isolation_pairs": 60,
+      "response_cancellation_batches": 3,
+      "response_cancellations": 24,
+      "simple_requests_per_workload": 120,
+      "workers": 2
+    },
+    "repetition_order": [
+      [
+        "control",
+        "wasm",
+        "native"
+      ],
+      [
+        "native",
+        "control",
+        "wasm"
+      ],
+      [
+        "wasm",
+        "native",
+        "control"
+      ]
+    ],
+    "repository_revision": "354c9897c8ed89c5e6ba1201c6b8ed68d3acc74f",
+    "sdk_commit": "9e5580933739775e8bce696a57a2e1bc99368f23",
+    "tracked_diff_sha256": "d8d594ff7633a02007464846e1d771c5bec17a2cf2e5ffe2c4b2ea4124ee3aa8",
+    "working_tree_dirty": true
+  },
+  "summary": [
+    {
+      "metrics": {
+        "startup_configure_s": {
+          "max": 1.1384933899971657,
+          "median": 1.0517266929964535,
+          "min": 1.0512311319471337
+        },
+        "workload:benign-pass:cpu_avg_percent": {
+          "max": 62.21956169628762,
+          "median": 61.35941246570415,
+          "min": 51.56049982846748
+        },
+        "workload:benign-pass:p50_ms": {
+          "max": 6.058919010683894,
+          "median": 5.117874010466039,
+          "min": 5.024169979151338
+        },
+        "workload:benign-pass:p95_ms": {
+          "max": 29.02618801454082,
+          "median": 16.90871099708602,
+          "min": 16.319485031999648
+        },
+        "workload:benign-pass:p99_ms": {
+          "max": 31.724933010991663,
+          "median": 22.214445983991027,
+          "min": 19.071477989200503
+        },
+        "workload:benign-pass:rss_peak_bytes": {
+          "max": 78204928,
+          "median": 77639680,
+          "min": 77213696
+        },
+        "workload:benign-pass:throughput_rps": {
+          "max": 2184.3560467963234,
+          "median": 1893.1273450620909,
+          "min": 1784.2032353123304
+        },
+        "workload:early-denial:cpu_avg_percent": {
+          "max": 81.20556197165114,
+          "median": 80.7531390168449,
+          "min": 80.24612796103841
+        },
+        "workload:early-denial:p50_ms": {
+          "max": 3.634341002907604,
+          "median": 3.5687069757841527,
+          "min": 3.206126973964274
+        },
+        "workload:early-denial:p95_ms": {
+          "max": 6.3257309957407415,
+          "median": 5.97060500876978,
+          "min": 5.737627041526139
+        },
+        "workload:early-denial:p99_ms": {
+          "max": 9.828003006987274,
+          "median": 6.552047037985176,
+          "min": 6.277850014157593
+        },
+        "workload:early-denial:rss_peak_bytes": {
+          "max": 78606336,
+          "median": 77996032,
+          "min": 77606912
+        },
+        "workload:early-denial:throughput_rps": {
+          "max": 3258.9126221696265,
+          "median": 3221.7656513515376,
+          "min": 3039.7939409795476
+        },
+        "workload:fragmented-upload:cpu_avg_percent": {
+          "max": 87.87334810124888,
+          "median": 80.68929417234598,
+          "min": 75.98220886366825
+        },
+        "workload:fragmented-upload:p50_ms": {
+          "max": 4.7146870056167245,
+          "median": 4.587930045090616,
+          "min": 3.536147007253021
+        },
+        "workload:fragmented-upload:p95_ms": {
+          "max": 9.26677999086678,
+          "median": 7.861352001782507,
+          "min": 5.80993399489671
+        },
+        "workload:fragmented-upload:p99_ms": {
+          "max": 9.695825050584972,
+          "median": 8.292380953207612,
+          "min": 6.0608459752984345
+        },
+        "workload:fragmented-upload:rss_peak_bytes": {
+          "max": 92573696,
+          "median": 92454912,
+          "min": 92311552
+        },
+        "workload:fragmented-upload:throughput_rps": {
+          "max": 1887.5928973887128,
+          "median": 1881.1842813442015,
+          "min": 1829.6892102572767
+        },
+        "workload:http2-concurrency:cpu_avg_percent": {
+          "max": 57.67696773615765,
+          "median": 55.57430696940513,
+          "min": 52.88813590378104
+        },
+        "workload:http2-concurrency:p50_ms": {
+          "max": 1.944,
+          "median": 1.865,
+          "min": 1.786
+        },
+        "workload:http2-concurrency:p95_ms": {
+          "max": 7.664,
+          "median": 5.679,
+          "min": 4.87
+        },
+        "workload:http2-concurrency:p99_ms": {
+          "max": 8.788,
+          "median": 6.484,
+          "min": 5.059
+        },
+        "workload:http2-concurrency:rss_peak_bytes": {
+          "max": 88510464,
+          "median": 87359488,
+          "min": 87199744
+        },
+        "workload:http2-concurrency:throughput_rps": {
+          "max": 3420.3081527995746,
+          "median": 3045.089870671585,
+          "min": 2951.990159660039
+        },
+        "workload:large-body:cpu_avg_percent": {
+          "max": 121.96210273464358,
+          "median": 120.80980156845192,
+          "min": 112.48184112937332
+        },
+        "workload:large-body:p50_ms": {
+          "max": 20.24742402136326,
+          "median": 20.22176398895681,
+          "min": 19.698886026162654
+        },
+        "workload:large-body:p95_ms": {
+          "max": 27.719475969206542,
+          "median": 27.49473397852853,
+          "min": 26.703059033025056
+        },
+        "workload:large-body:p99_ms": {
+          "max": 27.719475969206542,
+          "median": 27.49473397852853,
+          "min": 26.703059033025056
+        },
+        "workload:large-body:rss_peak_bytes": {
+          "max": 94932992,
+          "median": 93954048,
+          "min": 92454912
+        },
+        "workload:large-body:throughput_rps": {
+          "max": 405.925085273812,
+          "median": 404.1813367964268,
+          "min": 376.9497843753472
+        },
+        "workload:late-denial:cpu_avg_percent": {
+          "max": 81.141941098509,
+          "median": 80.63495973162473,
+          "min": 79.87578219622584
+        },
+        "workload:late-denial:p50_ms": {
+          "max": 3.938630979973823,
+          "median": 3.5439819912426174,
+          "min": 3.323547018226236
+        },
+        "workload:late-denial:p95_ms": {
+          "max": 6.6769300028681755,
+          "median": 6.56466098735109,
+          "min": 5.622040014714003
+        },
+        "workload:late-denial:p99_ms": {
+          "max": 9.917679999489337,
+          "median": 8.243020973168314,
+          "min": 7.1251509943977
+        },
+        "workload:late-denial:rss_peak_bytes": {
+          "max": 79007744,
+          "median": 78430208,
+          "min": 78020608
+        },
+        "workload:late-denial:throughput_rps": {
+          "max": 3128.7027887280005,
+          "median": 3063.2122980530044,
+          "min": 3014.8606224629893
+        },
+        "workload:multi-worker-isolation:cpu_avg_percent": {
+          "max": 81.104506445479,
+          "median": 80.5328925825233,
+          "min": 80.20631054495132
+        },
+        "workload:multi-worker-isolation:p50_ms": {
+          "max": 3.5351230180822313,
+          "median": 3.268683038186282,
+          "min": 3.034073975868523
+        },
+        "workload:multi-worker-isolation:p95_ms": {
+          "max": 6.440668017603457,
+          "median": 5.4983479785732925,
+          "min": 5.306908977217972
+        },
+        "workload:multi-worker-isolation:p99_ms": {
+          "max": 7.703379029408097,
+          "median": 6.513722997624427,
+          "min": 6.471734959632158
+        },
+        "workload:multi-worker-isolation:rss_peak_bytes": {
+          "max": 88735744,
+          "median": 87171072,
+          "min": 86884352
+        },
+        "workload:multi-worker-isolation:throughput_rps": {
+          "max": 3488.7477401022757,
+          "median": 3486.2416353682247,
+          "min": 3441.821750090034
+        },
+        "workload:response-cancellation-batch-1:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-1:cpu_avg_percent": {
+          "max": 83.67623077415318,
+          "median": 77.53173974946841,
+          "min": 77.1083576667656
+        },
+        "workload:response-cancellation-batch-1:p50_ms": {
+          "max": 3.1255149515345693,
+          "median": 2.7031530044041574,
+          "min": 2.485553966835141
+        },
+        "workload:response-cancellation-batch-1:p95_ms": {
+          "max": 4.205894016195089,
+          "median": 4.1961639653891325,
+          "min": 3.817283024545759
+        },
+        "workload:response-cancellation-batch-1:p99_ms": {
+          "max": 5.939918977674097,
+          "median": 4.411538015119731,
+          "min": 3.850736015010625
+        },
+        "workload:response-cancellation-batch-1:rss_peak_bytes": {
+          "max": 88764416,
+          "median": 87171072,
+          "min": 86921216
+        },
+        "workload:response-cancellation-batch-1:rss_recovery_bytes": {
+          "max": 88764416,
+          "median": 86925312,
+          "min": 86749184
+        },
+        "workload:response-cancellation-batch-1:throughput_rps": {
+          "max": 2552.552529658435,
+          "median": 2432.686304075371,
+          "min": 2218.302815176937
+        },
+        "workload:response-cancellation-batch-2:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-2:cpu_avg_percent": {
+          "max": 80.72500494229034,
+          "median": 78.59911949058304,
+          "min": 77.70922583678175
+        },
+        "workload:response-cancellation-batch-2:p50_ms": {
+          "max": 6.171891000121832,
+          "median": 4.083291976712644,
+          "min": 4.06333600403741
+        },
+        "workload:response-cancellation-batch-2:p95_ms": {
+          "max": 7.877864991314709,
+          "median": 7.842145045287907,
+          "min": 7.675804023165256
+        },
+        "workload:response-cancellation-batch-2:p99_ms": {
+          "max": 8.030298980884254,
+          "median": 8.00351903308183,
+          "min": 7.999043038580567
+        },
+        "workload:response-cancellation-batch-2:rss_peak_bytes": {
+          "max": 88813568,
+          "median": 87023616,
+          "min": 86777856
+        },
+        "workload:response-cancellation-batch-2:rss_recovery_bytes": {
+          "max": 88813568,
+          "median": 87023616,
+          "min": 86777856
+        },
+        "workload:response-cancellation-batch-2:throughput_rps": {
+          "max": 1923.5024653553492,
+          "median": 1857.7760933188151,
+          "min": 1692.0525053405813
+        },
+        "workload:response-cancellation-batch-3:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-3:cpu_avg_percent": {
+          "max": 79.806825360005,
+          "median": 79.11382046270903,
+          "min": 76.88499512812103
+        },
+        "workload:response-cancellation-batch-3:p50_ms": {
+          "max": 5.280878976918757,
+          "median": 4.470879037398845,
+          "min": 4.461853997781873
+        },
+        "workload:response-cancellation-batch-3:p95_ms": {
+          "max": 7.534939039032906,
+          "median": 7.278559030964971,
+          "min": 6.7850250052288175
+        },
+        "workload:response-cancellation-batch-3:p99_ms": {
+          "max": 7.676545006688684,
+          "median": 7.3016820242628455,
+          "min": 6.876936997286975
+        },
+        "workload:response-cancellation-batch-3:rss_peak_bytes": {
+          "max": 88813568,
+          "median": 87031808,
+          "min": 86802432
+        },
+        "workload:response-cancellation-batch-3:rss_recovery_bytes": {
+          "max": 88285184,
+          "median": 87031808,
+          "min": 86806528
+        },
+        "workload:response-cancellation-batch-3:throughput_rps": {
+          "max": 2240.127054158825,
+          "median": 1770.1840781608853,
+          "min": 1694.862232227342
+        },
+        "workload:small-body:cpu_avg_percent": {
+          "max": 82.65835554115806,
+          "median": 81.96815148685965,
+          "min": 81.70106633611812
+        },
+        "workload:small-body:p50_ms": {
+          "max": 3.8712340174242854,
+          "median": 3.497815050650388,
+          "min": 3.4743089927360415
+        },
+        "workload:small-body:p95_ms": {
+          "max": 7.190504984464496,
+          "median": 6.867467018309981,
+          "min": 6.137107033282518
+        },
+        "workload:small-body:p99_ms": {
+          "max": 8.160382974892855,
+          "median": 8.037193969357759,
+          "min": 7.216551981400698
+        },
+        "workload:small-body:rss_peak_bytes": {
+          "max": 80449536,
+          "median": 79872000,
+          "min": 79482880
+        },
+        "workload:small-body:throughput_rps": {
+          "max": 3204.5367702448784,
+          "median": 3142.046585371333,
+          "min": 2904.3547342318943
+        }
+      },
+      "repetitions": 3,
+      "ruleset": "crs",
+      "variant": "control"
+    },
+    {
+      "metrics": {
+        "startup_configure_s": {
+          "max": 1.4069072519778274,
+          "median": 1.3472609590389766,
+          "min": 1.3382029149797745
+        },
+        "workload:benign-pass:cpu_avg_percent": {
+          "max": 137.4641058284304,
+          "median": 132.43735229563495,
+          "min": 123.44091470714773
+        },
+        "workload:benign-pass:p50_ms": {
+          "max": 15.577365993522108,
+          "median": 14.069051016122103,
+          "min": 12.868257006630301
+        },
+        "workload:benign-pass:p95_ms": {
+          "max": 35.580167022999376,
+          "median": 35.0617139483802,
+          "min": 28.1175029813312
+        },
+        "workload:benign-pass:p99_ms": {
+          "max": 45.26000202167779,
+          "median": 42.80168795958161,
+          "min": 33.03795697866008
+        },
+        "workload:benign-pass:rss_peak_bytes": {
+          "max": 129175552,
+          "median": 128528384,
+          "min": 128290816
+        },
+        "workload:benign-pass:throughput_rps": {
+          "max": 1013.7774551383402,
+          "median": 1012.9689397532405,
+          "min": 952.8192870926853
+        },
+        "workload:early-denial:cpu_avg_percent": {
+          "max": 142.1215367813164,
+          "median": 142.02241707628983,
+          "min": 141.07730532621224
+        },
+        "workload:early-denial:p50_ms": {
+          "max": 11.843014042824507,
+          "median": 11.581926955841482,
+          "min": 10.56404400151223
+        },
+        "workload:early-denial:p95_ms": {
+          "max": 22.82479900168255,
+          "median": 21.72133099520579,
+          "min": 21.200001996476203
+        },
+        "workload:early-denial:p99_ms": {
+          "max": 26.604184007737786,
+          "median": 25.831794016994536,
+          "min": 25.43324400903657
+        },
+        "workload:early-denial:rss_peak_bytes": {
+          "max": 129200128,
+          "median": 128839680,
+          "min": 128630784
+        },
+        "workload:early-denial:throughput_rps": {
+          "max": 1306.2541198181664,
+          "median": 1298.9459200294793,
+          "min": 1293.4071342240738
+        },
+        "workload:fragmented-upload:cpu_avg_percent": {
+          "max": 191.42205824398303,
+          "median": 179.72518034959785,
+          "min": 172.63783532838195
+        },
+        "workload:fragmented-upload:p50_ms": {
+          "max": 183.40549699496478,
+          "median": 183.39293298777193,
+          "min": 177.51629400299862
+        },
+        "workload:fragmented-upload:p95_ms": {
+          "max": 270.4863879480399,
+          "median": 251.23555300524458,
+          "min": 199.16282600024715
+        },
+        "workload:fragmented-upload:p99_ms": {
+          "max": 275.14204499311745,
+          "median": 252.59938096860424,
+          "min": 199.41332598682493
+        },
+        "workload:fragmented-upload:rss_peak_bytes": {
+          "max": 185458688,
+          "median": 180035584,
+          "min": 177803264
+        },
+        "workload:fragmented-upload:throughput_rps": {
+          "max": 86.8062045198909,
+          "median": 83.37388713668759,
+          "min": 82.86500084761144
+        },
+        "workload:http2-concurrency:cpu_avg_percent": {
+          "max": 110.97236129982868,
+          "median": 106.98770887377944,
+          "min": 102.28059210500906
+        },
+        "workload:http2-concurrency:p50_ms": {
+          "max": 13.757,
+          "median": 12.408000000000001,
+          "min": 11.976
+        },
+        "workload:http2-concurrency:p95_ms": {
+          "max": 25.96,
+          "median": 19.322,
+          "min": 15.344999999999999
+        },
+        "workload:http2-concurrency:p99_ms": {
+          "max": 26.133,
+          "median": 19.474,
+          "min": 15.966999999999999
+        },
+        "workload:http2-concurrency:rss_peak_bytes": {
+          "max": 185901056,
+          "median": 175046656,
+          "min": 175034368
+        },
+        "workload:http2-concurrency:throughput_rps": {
+          "max": 1043.7150117862172,
+          "median": 1041.530110886507,
+          "min": 910.0446494894672
+        },
+        "workload:large-body:cpu_avg_percent": {
+          "max": 195.52448981542517,
+          "median": 178.69945922418756,
+          "min": 176.89683481260514
+        },
+        "workload:large-body:p50_ms": {
+          "max": 1146.5274700312875,
+          "median": 1125.8183380123228,
+          "min": 1125.7519329665229
+        },
+        "workload:large-body:p95_ms": {
+          "max": 1209.043902985286,
+          "median": 1207.1134410216473,
+          "min": 1151.277254044544
+        },
+        "workload:large-body:p99_ms": {
+          "max": 1209.043902985286,
+          "median": 1207.1134410216473,
+          "min": 1151.277254044544
+        },
+        "workload:large-body:rss_peak_bytes": {
+          "max": 184205312,
+          "median": 179511296,
+          "min": 178089984
+        },
+        "workload:large-body:throughput_rps": {
+          "max": 10.358698418995731,
+          "median": 9.91471172481668,
+          "min": 9.909821335960354
+        },
+        "workload:late-denial:cpu_avg_percent": {
+          "max": 146.6840221889806,
+          "median": 134.29663746218537,
+          "min": 133.5971520071652
+        },
+        "workload:late-denial:p50_ms": {
+          "max": 12.074207013938576,
+          "median": 11.355984024703503,
+          "min": 8.996132004540414
+        },
+        "workload:late-denial:p95_ms": {
+          "max": 24.476730963215232,
+          "median": 24.412460974417627,
+          "min": 23.34895299281925
+        },
+        "workload:late-denial:p99_ms": {
+          "max": 29.20703898416832,
+          "median": 27.403313026297837,
+          "min": 27.106395980808884
+        },
+        "workload:late-denial:rss_peak_bytes": {
+          "max": 129458176,
+          "median": 129159168,
+          "min": 128856064
+        },
+        "workload:late-denial:throughput_rps": {
+          "max": 1269.5427058743794,
+          "median": 1219.852737127283,
+          "min": 1217.1752187241734
+        },
+        "workload:multi-worker-isolation:cpu_avg_percent": {
+          "max": 149.45984951153451,
+          "median": 148.80278937768904,
+          "min": 137.21957820031682
+        },
+        "workload:multi-worker-isolation:p50_ms": {
+          "max": 13.299346959684044,
+          "median": 12.669766030739993,
+          "min": 11.266695044469088
+        },
+        "workload:multi-worker-isolation:p95_ms": {
+          "max": 26.083746983204037,
+          "median": 22.95493596466258,
+          "min": 22.302298981230706
+        },
+        "workload:multi-worker-isolation:p99_ms": {
+          "max": 27.538324997294694,
+          "median": 27.403003012295812,
+          "min": 26.11697994871065
+        },
+        "workload:multi-worker-isolation:rss_peak_bytes": {
+          "max": 185815040,
+          "median": 174415872,
+          "min": 173621248
+        },
+        "workload:multi-worker-isolation:throughput_rps": {
+          "max": 1234.8566824370594,
+          "median": 1227.534783303387,
+          "min": 1189.5502534974203
+        },
+        "workload:response-cancellation-batch-1:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-1:cpu_avg_percent": {
+          "max": 27.250412922922145,
+          "median": 26.91299564660154,
+          "min": 25.375943064416145
+        },
+        "workload:response-cancellation-batch-1:p50_ms": {
+          "max": 101.74976597772911,
+          "median": 101.23553202720359,
+          "min": 100.54120200220495
+        },
+        "workload:response-cancellation-batch-1:p95_ms": {
+          "max": 104.73574098432437,
+          "median": 102.19981096452102,
+          "min": 101.48199897957966
+        },
+        "workload:response-cancellation-batch-1:p99_ms": {
+          "max": 104.79343897895887,
+          "median": 102.6383779826574,
+          "min": 102.50612604431808
+        },
+        "workload:response-cancellation-batch-1:rss_peak_bytes": {
+          "max": 185835520,
+          "median": 174452736,
+          "min": 173846528
+        },
+        "workload:response-cancellation-batch-1:rss_recovery_bytes": {
+          "max": 185835520,
+          "median": 174452736,
+          "min": 173846528
+        },
+        "workload:response-cancellation-batch-1:throughput_rps": {
+          "max": 117.27986934968582,
+          "median": 116.65416490977013,
+          "min": 115.19946771271604
+        },
+        "workload:response-cancellation-batch-2:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-2:cpu_avg_percent": {
+          "max": 27.427478687044626,
+          "median": 26.84611875541711,
+          "min": 25.085477461880618
+        },
+        "workload:response-cancellation-batch-2:p50_ms": {
+          "max": 100.65100505016744,
+          "median": 100.64230201533064,
+          "min": 100.6117719807662
+        },
+        "workload:response-cancellation-batch-2:p95_ms": {
+          "max": 101.99536697473377,
+          "median": 101.67459002695978,
+          "min": 101.44351300550625
+        },
+        "workload:response-cancellation-batch-2:p99_ms": {
+          "max": 102.15923597570509,
+          "median": 101.74150497186929,
+          "min": 101.49422800168395
+        },
+        "workload:response-cancellation-batch-2:rss_peak_bytes": {
+          "max": 185888768,
+          "median": 174682112,
+          "min": 174075904
+        },
+        "workload:response-cancellation-batch-2:rss_recovery_bytes": {
+          "max": 185888768,
+          "median": 174690304,
+          "min": 174075904
+        },
+        "workload:response-cancellation-batch-2:throughput_rps": {
+          "max": 117.05305757757698,
+          "median": 117.04865446091006,
+          "min": 116.48548725695767
+        },
+        "workload:response-cancellation-batch-3:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-3:cpu_avg_percent": {
+          "max": 28.262445254733866,
+          "median": 27.899123220100602,
+          "min": 25.407170897285987
+        },
+        "workload:response-cancellation-batch-3:p50_ms": {
+          "max": 102.1999410004355,
+          "median": 100.54967796895653,
+          "min": 100.49569298280403
+        },
+        "workload:response-cancellation-batch-3:p95_ms": {
+          "max": 103.76972699305043,
+          "median": 102.1046030218713,
+          "min": 101.18899797089398
+        },
+        "workload:response-cancellation-batch-3:p99_ms": {
+          "max": 104.03864295221865,
+          "median": 102.27177699562162,
+          "min": 101.21471696766093
+        },
+        "workload:response-cancellation-batch-3:rss_peak_bytes": {
+          "max": 185901056,
+          "median": 174800896,
+          "min": 174460928
+        },
+        "workload:response-cancellation-batch-3:rss_recovery_bytes": {
+          "max": 185901056,
+          "median": 174800896,
+          "min": 174469120
+        },
+        "workload:response-cancellation-batch-3:throughput_rps": {
+          "max": 117.43194995128385,
+          "median": 116.37094248647311,
+          "min": 115.870171021583
+        },
+        "workload:small-body:cpu_avg_percent": {
+          "max": 158.5172375006123,
+          "median": 153.50117824293164,
+          "min": 144.77626847831596
+        },
+        "workload:small-body:p50_ms": {
+          "max": 21.434824040625244,
+          "median": 18.550115986727178,
+          "min": 17.38171704346314
+        },
+        "workload:small-body:p95_ms": {
+          "max": 37.425320013426244,
+          "median": 33.67479098960757,
+          "min": 32.3661370202899
+        },
+        "workload:small-body:p99_ms": {
+          "max": 39.53454800648615,
+          "median": 36.42337198834866,
+          "min": 35.84684798261151
+        },
+        "workload:small-body:rss_peak_bytes": {
+          "max": 133009408,
+          "median": 132321280,
+          "min": 132046848
+        },
+        "workload:small-body:throughput_rps": {
+          "max": 814.3043634636051,
+          "median": 788.0660375407871,
+          "min": 787.9431671116155
+        }
+      },
+      "repetitions": 3,
+      "ruleset": "crs",
+      "variant": "native"
+    },
+    {
+      "metrics": {
+        "startup_configure_s": {
+          "max": 3.380775124998763,
+          "median": 3.2955931979813613,
+          "min": 3.1762155609903857
+        },
+        "workload:benign-pass:cpu_avg_percent": {
+          "max": 144.77763380203967,
+          "median": 139.99927942024135,
+          "min": 134.9834633716035
+        },
+        "workload:benign-pass:p50_ms": {
+          "max": 23.05055601755157,
+          "median": 18.01793702179566,
+          "min": 15.453548985533416
+        },
+        "workload:benign-pass:p95_ms": {
+          "max": 40.40316794998944,
+          "median": 40.12081795372069,
+          "min": 37.06425504060462
+        },
+        "workload:benign-pass:p99_ms": {
+          "max": 52.07093001808971,
+          "median": 44.17077702237293,
+          "min": 42.503860022407025
+        },
+        "workload:benign-pass:rss_peak_bytes": {
+          "max": 341745664,
+          "median": 340725760,
+          "min": 335323136
+        },
+        "workload:benign-pass:throughput_rps": {
+          "max": 877.3488017562184,
+          "median": 800.3881668664146,
+          "min": 666.7018203681226
+        },
+        "workload:early-denial:cpu_avg_percent": {
+          "max": 155.1120683212933,
+          "median": 154.24924375784346,
+          "min": 146.2450658994773
+        },
+        "workload:early-denial:p50_ms": {
+          "max": 17.280747997574508,
+          "median": 13.036413991358131,
+          "min": 9.884951985441148
+        },
+        "workload:early-denial:p95_ms": {
+          "max": 31.4669799990952,
+          "median": 30.494494014419615,
+          "min": 24.115243984851986
+        },
+        "workload:early-denial:p99_ms": {
+          "max": 34.86157098086551,
+          "median": 32.65834500780329,
+          "min": 30.58819903526455
+        },
+        "workload:early-denial:rss_peak_bytes": {
+          "max": 341745664,
+          "median": 340725760,
+          "min": 335323136
+        },
+        "workload:early-denial:throughput_rps": {
+          "max": 1108.1346302966128,
+          "median": 1079.7841532752832,
+          "min": 819.2799176263884
+        },
+        "workload:fragmented-upload:cpu_avg_percent": {
+          "max": 189.52715964925463,
+          "median": 186.68650040188354,
+          "min": 168.9453586816616
+        },
+        "workload:fragmented-upload:p50_ms": {
+          "max": 302.8504300164059,
+          "median": 302.027094992809,
+          "min": 227.9091800446622
+        },
+        "workload:fragmented-upload:p95_ms": {
+          "max": 519.1059210337698,
+          "median": 461.6577169508673,
+          "min": 314.7237139637582
+        },
+        "workload:fragmented-upload:p99_ms": {
+          "max": 522.5931350141764,
+          "median": 462.1457429602742,
+          "min": 315.87551697157323
+        },
+        "workload:fragmented-upload:rss_peak_bytes": {
+          "max": 384339968,
+          "median": 381792256,
+          "min": 381452288
+        },
+        "workload:fragmented-upload:throughput_rps": {
+          "max": 51.746131402825284,
+          "median": 51.67050417379745,
+          "min": 49.463271412393226
+        },
+        "workload:http2-concurrency:cpu_avg_percent": {
+          "max": 109.8258079760418,
+          "median": 104.69781422683131,
+          "min": 101.77658324060789
+        },
+        "workload:http2-concurrency:p50_ms": {
+          "max": 15.699000000000002,
+          "median": 15.625,
+          "min": 14.549
+        },
+        "workload:http2-concurrency:p95_ms": {
+          "max": 21.769000000000002,
+          "median": 18.394000000000002,
+          "min": 17.397
+        },
+        "workload:http2-concurrency:p99_ms": {
+          "max": 28.149,
+          "median": 22.630999999999997,
+          "min": 18.77
+        },
+        "workload:http2-concurrency:rss_peak_bytes": {
+          "max": 381870080,
+          "median": 380305408,
+          "min": 375824384
+        },
+        "workload:http2-concurrency:throughput_rps": {
+          "max": 868.2568422487307,
+          "median": 860.5064044286211,
+          "min": 839.0254450875854
+        },
+        "workload:large-body:cpu_avg_percent": {
+          "max": 177.78999062571467,
+          "median": 161.2485528363389,
+          "min": 143.93158062671242
+        },
+        "workload:large-body:p50_ms": {
+          "max": 2221.4652589755133,
+          "median": 2100.971735024359,
+          "min": 1900.8773940149695
+        },
+        "workload:large-body:p95_ms": {
+          "max": 2228.31411997322,
+          "median": 2105.1539729814976,
+          "min": 2050.6315829697996
+        },
+        "workload:large-body:p99_ms": {
+          "max": 2228.31411997322,
+          "median": 2105.1539729814976,
+          "min": 2050.6315829697996
+        },
+        "workload:large-body:rss_peak_bytes": {
+          "max": 386002944,
+          "median": 384593920,
+          "min": 382705664
+        },
+        "workload:large-body:throughput_rps": {
+          "max": 5.846037693141851,
+          "median": 5.696625989259825,
+          "min": 5.380395234343952
+        },
+        "workload:late-denial:cpu_avg_percent": {
+          "max": 158.92168917956135,
+          "median": 149.56736045706768,
+          "min": 147.97465182949924
+        },
+        "workload:late-denial:p50_ms": {
+          "max": 17.66742399195209,
+          "median": 14.096572005655617,
+          "min": 12.118505022954196
+        },
+        "workload:late-denial:p95_ms": {
+          "max": 34.884041000623256,
+          "median": 32.286496949382126,
+          "min": 22.117153042927384
+        },
+        "workload:late-denial:p99_ms": {
+          "max": 45.01959099434316,
+          "median": 34.960074990522116,
+          "min": 28.459004999604076
+        },
+        "workload:late-denial:rss_peak_bytes": {
+          "max": 341745664,
+          "median": 340729856,
+          "min": 335323136
+        },
+        "workload:late-denial:throughput_rps": {
+          "max": 1061.2112395550134,
+          "median": 1012.3981994663424,
+          "min": 791.860972961263
+        },
+        "workload:multi-worker-isolation:cpu_avg_percent": {
+          "max": 156.626402715821,
+          "median": 149.89664197831866,
+          "min": 148.02188278776916
+        },
+        "workload:multi-worker-isolation:p50_ms": {
+          "max": 13.653640984557569,
+          "median": 13.484194001648575,
+          "min": 12.534586014226079
+        },
+        "workload:multi-worker-isolation:p95_ms": {
+          "max": 29.860223992727697,
+          "median": 29.53169704414904,
+          "min": 28.081556025426835
+        },
+        "workload:multi-worker-isolation:p99_ms": {
+          "max": 33.538236981257796,
+          "median": 31.420111015904695,
+          "min": 30.896237993147224
+        },
+        "workload:multi-worker-isolation:rss_peak_bytes": {
+          "max": 381767680,
+          "median": 380243968,
+          "min": 375566336
+        },
+        "workload:multi-worker-isolation:throughput_rps": {
+          "max": 1016.3890702461277,
+          "median": 1012.461699035149,
+          "min": 998.9835009044729
+        },
+        "workload:response-cancellation-batch-1:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-1:cpu_avg_percent": {
+          "max": 30.1162980514591,
+          "median": 29.29200834987395,
+          "min": 28.776964077266857
+        },
+        "workload:response-cancellation-batch-1:p50_ms": {
+          "max": 101.89383698161691,
+          "median": 101.06876201462,
+          "min": 100.5763040157035
+        },
+        "workload:response-cancellation-batch-1:p95_ms": {
+          "max": 104.32299599051476,
+          "median": 102.05388098256662,
+          "min": 101.46633395925164
+        },
+        "workload:response-cancellation-batch-1:p99_ms": {
+          "max": 104.62455201195553,
+          "median": 102.37615602090955,
+          "min": 101.55644395854324
+        },
+        "workload:response-cancellation-batch-1:rss_peak_bytes": {
+          "max": 381784064,
+          "median": 380252160,
+          "min": 375586816
+        },
+        "workload:response-cancellation-batch-1:rss_recovery_bytes": {
+          "max": 381784064,
+          "median": 380256256,
+          "min": 375586816
+        },
+        "workload:response-cancellation-batch-1:throughput_rps": {
+          "max": 117.2615602999071,
+          "median": 116.56384414070241,
+          "min": 116.50217650183112
+        },
+        "workload:response-cancellation-batch-2:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-2:cpu_avg_percent": {
+          "max": 30.17356845479774,
+          "median": 27.943026542365168,
+          "min": 26.72190924115501
+        },
+        "workload:response-cancellation-batch-2:p50_ms": {
+          "max": 101.16006998578086,
+          "median": 100.45891400659457,
+          "min": 100.39981699083
+        },
+        "workload:response-cancellation-batch-2:p95_ms": {
+          "max": 102.02388098696247,
+          "median": 100.97206704085693,
+          "min": 100.81331396941096
+        },
+        "workload:response-cancellation-batch-2:p99_ms": {
+          "max": 102.11721697123721,
+          "median": 101.00657603470609,
+          "min": 100.9889289853163
+        },
+        "workload:response-cancellation-batch-2:rss_peak_bytes": {
+          "max": 381788160,
+          "median": 380301312,
+          "min": 375599104
+        },
+        "workload:response-cancellation-batch-2:rss_recovery_bytes": {
+          "max": 381788160,
+          "median": 380301312,
+          "min": 375599104
+        },
+        "workload:response-cancellation-batch-2:throughput_rps": {
+          "max": 117.0633705168178,
+          "median": 116.7724225319529,
+          "min": 116.31501355870391
+        },
+        "workload:response-cancellation-batch-3:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-3:cpu_avg_percent": {
+          "max": 30.280366653126794,
+          "median": 29.867020612078914,
+          "min": 29.060166302010625
+        },
+        "workload:response-cancellation-batch-3:p50_ms": {
+          "max": 101.03346197865903,
+          "median": 100.53597902879119,
+          "min": 100.53315700497478
+        },
+        "workload:response-cancellation-batch-3:p95_ms": {
+          "max": 101.98493802454323,
+          "median": 101.88887803815305,
+          "min": 101.12224298063666
+        },
+        "workload:response-cancellation-batch-3:p99_ms": {
+          "max": 102.97202999936417,
+          "median": 102.93555603129789,
+          "min": 102.29043202707544
+        },
+        "workload:response-cancellation-batch-3:rss_peak_bytes": {
+          "max": 381788160,
+          "median": 380301312,
+          "min": 375603200
+        },
+        "workload:response-cancellation-batch-3:rss_recovery_bytes": {
+          "max": 381788160,
+          "median": 380108800,
+          "min": 375603200
+        },
+        "workload:response-cancellation-batch-3:throughput_rps": {
+          "max": 116.68406465372549,
+          "median": 116.65363248820843,
+          "min": 116.59024652980727
+        },
+        "workload:small-body:cpu_avg_percent": {
+          "max": 165.67262177911422,
+          "median": 162.52743538562567,
+          "min": 159.74465351334194
+        },
+        "workload:small-body:p50_ms": {
+          "max": 25.1928239595145,
+          "median": 24.113319988828152,
+          "min": 21.021283988375217
+        },
+        "workload:small-body:p95_ms": {
+          "max": 45.24447803851217,
+          "median": 43.417634966317564,
+          "min": 41.54967999784276
+        },
+        "workload:small-body:p99_ms": {
+          "max": 50.00466201454401,
+          "median": 45.00041395658627,
+          "min": 42.825894022826105
+        },
+        "workload:small-body:rss_peak_bytes": {
+          "max": 344936448,
+          "median": 343580672,
+          "min": 337829888
+        },
+        "workload:small-body:throughput_rps": {
+          "max": 636.4743396069903,
+          "median": 635.7005183802551,
+          "min": 569.2825983750754
+        }
+      },
+      "repetitions": 3,
+      "ruleset": "crs",
+      "variant": "wasm"
+    },
+    {
+      "metrics": {
+        "startup_configure_s": {
+          "max": 1.232982033980079,
+          "median": 1.0589906929526478,
+          "min": 1.0363320700125769
+        },
+        "workload:benign-pass:cpu_avg_percent": {
+          "max": 69.67479339647565,
+          "median": 69.67075872191988,
+          "min": 64.95923542657916
+        },
+        "workload:benign-pass:p50_ms": {
+          "max": 5.165593000128865,
+          "median": 4.796463996171951,
+          "min": 4.585267975926399
+        },
+        "workload:benign-pass:p95_ms": {
+          "max": 18.86587601620704,
+          "median": 14.489951019641012,
+          "min": 12.482939986512065
+        },
+        "workload:benign-pass:p99_ms": {
+          "max": 22.869504988193512,
+          "median": 17.879502032883465,
+          "min": 14.99033794971183
+        },
+        "workload:benign-pass:rss_peak_bytes": {
+          "max": 78028800,
+          "median": 77987840,
+          "min": 77463552
+        },
+        "workload:benign-pass:throughput_rps": {
+          "max": 2337.9495575127435,
+          "median": 2220.5819512962503,
+          "min": 2125.687396359384
+        },
+        "workload:early-denial:cpu_avg_percent": {
+          "max": 81.86174619350106,
+          "median": 81.42159460458143,
+          "min": 80.8163416325744
+        },
+        "workload:early-denial:p50_ms": {
+          "max": 4.0557560278102756,
+          "median": 4.001689027063549,
+          "min": 3.412141988519579
+        },
+        "workload:early-denial:p95_ms": {
+          "max": 7.300624041818082,
+          "median": 7.067147002089769,
+          "min": 6.382998020853847
+        },
+        "workload:early-denial:p99_ms": {
+          "max": 8.83524800883606,
+          "median": 8.783532015513629,
+          "min": 6.924163026269525
+        },
+        "workload:early-denial:rss_peak_bytes": {
+          "max": 78606336,
+          "median": 78438400,
+          "min": 77914112
+        },
+        "workload:early-denial:throughput_rps": {
+          "max": 3056.4975246332806,
+          "median": 2973.816953719049,
+          "min": 2644.7747482743084
+        },
+        "workload:fragmented-upload:cpu_avg_percent": {
+          "max": 97.52457979047685,
+          "median": 89.71943861782867,
+          "min": 78.37511956523848
+        },
+        "workload:fragmented-upload:p50_ms": {
+          "max": 6.860980996862054,
+          "median": 4.397376033011824,
+          "min": 3.223538980819285
+        },
+        "workload:fragmented-upload:p95_ms": {
+          "max": 13.01191799575463,
+          "median": 10.339266038499773,
+          "min": 9.106946992687881
+        },
+        "workload:fragmented-upload:p99_ms": {
+          "max": 13.609779009129852,
+          "median": 12.630637967959046,
+          "min": 11.54814101755619
+        },
+        "workload:fragmented-upload:rss_peak_bytes": {
+          "max": 94191616,
+          "median": 91533312,
+          "min": 90923008
+        },
+        "workload:fragmented-upload:throughput_rps": {
+          "max": 1631.328103348271,
+          "median": 1513.0550913151635,
+          "min": 1420.9937862194981
+        },
+        "workload:http2-concurrency:cpu_avg_percent": {
+          "max": 63.10110057374103,
+          "median": 53.83679620371622,
+          "min": 50.50500497908538
+        },
+        "workload:http2-concurrency:p50_ms": {
+          "max": 2.503,
+          "median": 1.88,
+          "min": 1.799
+        },
+        "workload:http2-concurrency:p95_ms": {
+          "max": 5.955,
+          "median": 5.643,
+          "min": 5.009
+        },
+        "workload:http2-concurrency:p99_ms": {
+          "max": 6.383,
+          "median": 6.197,
+          "min": 5.311
+        },
+        "workload:http2-concurrency:rss_peak_bytes": {
+          "max": 89276416,
+          "median": 89088000,
+          "min": 87056384
+        },
+        "workload:http2-concurrency:throughput_rps": {
+          "max": 3326.338968410014,
+          "median": 3008.3394209720277,
+          "min": 2793.7323158385916
+        },
+        "workload:large-body:cpu_avg_percent": {
+          "max": 122.43501874233591,
+          "median": 115.788095213938,
+          "min": 111.23754846813532
+        },
+        "workload:large-body:p50_ms": {
+          "max": 22.95745100127533,
+          "median": 19.554223981685936,
+          "min": 17.981700017116964
+        },
+        "workload:large-body:p95_ms": {
+          "max": 35.53678101161495,
+          "median": 27.446534018963575,
+          "min": 24.637227004859596
+        },
+        "workload:large-body:p99_ms": {
+          "max": 35.53678101161495,
+          "median": 27.446534018963575,
+          "min": 24.637227004859596
+        },
+        "workload:large-body:rss_peak_bytes": {
+          "max": 94199808,
+          "median": 93720576,
+          "min": 92037120
+        },
+        "workload:large-body:throughput_rps": {
+          "max": 398.6488196738651,
+          "median": 385.83170681085625,
+          "min": 315.560053336239
+        },
+        "workload:late-denial:cpu_avg_percent": {
+          "max": 82.1011584108302,
+          "median": 81.13928316417109,
+          "min": 80.78773527040089
+        },
+        "workload:late-denial:p50_ms": {
+          "max": 3.7598430062644184,
+          "median": 3.754967008717358,
+          "min": 3.3548640203662217
+        },
+        "workload:late-denial:p95_ms": {
+          "max": 7.2461519739590585,
+          "median": 6.734444003086537,
+          "min": 6.0418680077418685
+        },
+        "workload:late-denial:p99_ms": {
+          "max": 12.223294994328171,
+          "median": 10.004373034462333,
+          "min": 8.89355898834765
+        },
+        "workload:late-denial:rss_peak_bytes": {
+          "max": 79020032,
+          "median": 78831616,
+          "min": 78303232
+        },
+        "workload:late-denial:throughput_rps": {
+          "max": 3127.166295425343,
+          "median": 2950.0955232062583,
+          "min": 2735.8773721376065
+        },
+        "workload:multi-worker-isolation:cpu_avg_percent": {
+          "max": 80.91370859628472,
+          "median": 80.10388183608603,
+          "min": 77.97642637796012
+        },
+        "workload:multi-worker-isolation:p50_ms": {
+          "max": 3.988220007158816,
+          "median": 3.330367966555059,
+          "min": 3.1878419686108828
+        },
+        "workload:multi-worker-isolation:p95_ms": {
+          "max": 6.235098000615835,
+          "median": 5.7165969628840685,
+          "min": 5.403089977335185
+        },
+        "workload:multi-worker-isolation:p99_ms": {
+          "max": 7.760024047456682,
+          "median": 7.721209025476128,
+          "min": 6.241940951440483
+        },
+        "workload:multi-worker-isolation:rss_peak_bytes": {
+          "max": 89190400,
+          "median": 88518656,
+          "min": 87642112
+        },
+        "workload:multi-worker-isolation:throughput_rps": {
+          "max": 3488.662342467001,
+          "median": 3480.1295464792515,
+          "min": 2918.4614700752304
+        },
+        "workload:response-cancellation-batch-1:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-1:cpu_avg_percent": {
+          "max": 78.2055315183687,
+          "median": 76.72534914339684,
+          "min": 76.53878098115938
+        },
+        "workload:response-cancellation-batch-1:p50_ms": {
+          "max": 4.791715007741004,
+          "median": 2.920400002039969,
+          "min": 2.220429014414549
+        },
+        "workload:response-cancellation-batch-1:p95_ms": {
+          "max": 5.797829013317823,
+          "median": 4.884005000349134,
+          "min": 3.4487199736759067
+        },
+        "workload:response-cancellation-batch-1:p99_ms": {
+          "max": 6.1673810123465955,
+          "median": 5.307540006469935,
+          "min": 3.726871043909341
+        },
+        "workload:response-cancellation-batch-1:rss_peak_bytes": {
+          "max": 89214976,
+          "median": 88563712,
+          "min": 86929408
+        },
+        "workload:response-cancellation-batch-1:rss_recovery_bytes": {
+          "max": 89223168,
+          "median": 88567808,
+          "min": 86941696
+        },
+        "workload:response-cancellation-batch-1:throughput_rps": {
+          "max": 2570.2123178226125,
+          "median": 2396.4190258218614,
+          "min": 1747.1216200696717
+        },
+        "workload:response-cancellation-batch-2:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-2:cpu_avg_percent": {
+          "max": 80.78701569549865,
+          "median": 80.54591821269116,
+          "min": 77.44741683426868
+        },
+        "workload:response-cancellation-batch-2:p50_ms": {
+          "max": 5.479293002281338,
+          "median": 4.7667050384916365,
+          "min": 4.667502944357693
+        },
+        "workload:response-cancellation-batch-2:p95_ms": {
+          "max": 7.320811972022057,
+          "median": 6.968112022150308,
+          "min": 6.863600050564855
+        },
+        "workload:response-cancellation-batch-2:p99_ms": {
+          "max": 7.447860029060394,
+          "median": 7.44259002385661,
+          "min": 6.931708019692451
+        },
+        "workload:response-cancellation-batch-2:rss_peak_bytes": {
+          "max": 89235456,
+          "median": 88596480,
+          "min": 86949888
+        },
+        "workload:response-cancellation-batch-2:rss_recovery_bytes": {
+          "max": 89235456,
+          "median": 88596480,
+          "min": 86683648
+        },
+        "workload:response-cancellation-batch-2:throughput_rps": {
+          "max": 1783.213810992333,
+          "median": 1765.8540794437126,
+          "min": 1650.813012044901
+        },
+        "workload:response-cancellation-batch-3:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-3:cpu_avg_percent": {
+          "max": 84.42984822171213,
+          "median": 78.80009829355981,
+          "min": 77.900844307656
+        },
+        "workload:response-cancellation-batch-3:p50_ms": {
+          "max": 5.469954980071634,
+          "median": 5.098579975310713,
+          "min": 4.392307018861175
+        },
+        "workload:response-cancellation-batch-3:p95_ms": {
+          "max": 7.906937971711159,
+          "median": 7.531526032835245,
+          "min": 6.229417980648577
+        },
+        "workload:response-cancellation-batch-3:p99_ms": {
+          "max": 8.806065015960485,
+          "median": 7.5499820522964,
+          "min": 6.687846966087818
+        },
+        "workload:response-cancellation-batch-3:rss_peak_bytes": {
+          "max": 89276416,
+          "median": 88649728,
+          "min": 86716416
+        },
+        "workload:response-cancellation-batch-3:rss_recovery_bytes": {
+          "max": 89276416,
+          "median": 88649728,
+          "min": 86720512
+        },
+        "workload:response-cancellation-batch-3:throughput_rps": {
+          "max": 1828.8053766435878,
+          "median": 1716.6219107247307,
+          "min": 1710.2270978629203
+        },
+        "workload:small-body:cpu_avg_percent": {
+          "max": 81.92038744810279,
+          "median": 81.56820245920989,
+          "min": 81.36659490585468
+        },
+        "workload:small-body:p50_ms": {
+          "max": 4.567013005726039,
+          "median": 3.6386879510246217,
+          "min": 3.5933410399593413
+        },
+        "workload:small-body:p95_ms": {
+          "max": 7.280285994056612,
+          "median": 6.144278042484075,
+          "min": 5.938993999734521
+        },
+        "workload:small-body:p99_ms": {
+          "max": 8.353236014954746,
+          "median": 8.328999974764884,
+          "min": 8.00425000488758
+        },
+        "workload:small-body:rss_peak_bytes": {
+          "max": 80392192,
+          "median": 80252928,
+          "min": 79736832
+        },
+        "workload:small-body:throughput_rps": {
+          "max": 3136.8237827938947,
+          "median": 3108.346870468463,
+          "min": 2624.531849042164
+        }
+      },
+      "repetitions": 3,
+      "ruleset": "minimal",
+      "variant": "control"
+    },
+    {
+      "metrics": {
+        "startup_configure_s": {
+          "max": 1.1296917779836804,
+          "median": 1.123088956985157,
+          "min": 1.0565469239954837
+        },
+        "workload:benign-pass:cpu_avg_percent": {
+          "max": 71.33372447924425,
+          "median": 70.04494001703291,
+          "min": 66.68925794426345
+        },
+        "workload:benign-pass:p50_ms": {
+          "max": 6.880742032080889,
+          "median": 6.260705995373428,
+          "min": 6.147334002889693
+        },
+        "workload:benign-pass:p95_ms": {
+          "max": 27.637045015580952,
+          "median": 20.385063951835036,
+          "min": 13.73793202219531
+        },
+        "workload:benign-pass:p99_ms": {
+          "max": 31.970871961675584,
+          "median": 23.588515003211796,
+          "min": 18.47062597516924
+        },
+        "workload:benign-pass:rss_peak_bytes": {
+          "max": 81637376,
+          "median": 81440768,
+          "min": 80867328
+        },
+        "workload:benign-pass:throughput_rps": {
+          "max": 2057.258510781156,
+          "median": 1735.418951579046,
+          "min": 1679.9362037902124
+        },
+        "workload:early-denial:cpu_avg_percent": {
+          "max": 61.903325257989984,
+          "median": 58.79565585695312,
+          "min": 58.37531695038901
+        },
+        "workload:early-denial:p50_ms": {
+          "max": 3.317604016046971,
+          "median": 2.6764629874378443,
+          "min": 2.4832510389387608
+        },
+        "workload:early-denial:p95_ms": {
+          "max": 6.585595023352653,
+          "median": 4.814948013518006,
+          "min": 4.764740995597094
+        },
+        "workload:early-denial:p99_ms": {
+          "max": 7.889567001257092,
+          "median": 5.420282017439604,
+          "min": 5.398480978328735
+        },
+        "workload:early-denial:rss_peak_bytes": {
+          "max": 81641472,
+          "median": 81440768,
+          "min": 80875520
+        },
+        "workload:early-denial:throughput_rps": {
+          "max": 3350.338906327165,
+          "median": 3325.45394885791,
+          "min": 3006.8412388061456
+        },
+        "workload:fragmented-upload:cpu_avg_percent": {
+          "max": 104.0188354682253,
+          "median": 103.95455212973546,
+          "min": 92.22702470948164
+        },
+        "workload:fragmented-upload:p50_ms": {
+          "max": 8.944033004809171,
+          "median": 7.687990029808134,
+          "min": 7.649064005818218
+        },
+        "workload:fragmented-upload:p95_ms": {
+          "max": 14.805882005020976,
+          "median": 14.370777003932744,
+          "min": 12.203838035929948
+        },
+        "workload:fragmented-upload:p99_ms": {
+          "max": 15.330634952988476,
+          "median": 15.215271967463195,
+          "min": 15.18341904738918
+        },
+        "workload:fragmented-upload:rss_peak_bytes": {
+          "max": 114495488,
+          "median": 112078848,
+          "min": 108335104
+        },
+        "workload:fragmented-upload:throughput_rps": {
+          "max": 1490.6883476631008,
+          "median": 1456.782675383259,
+          "min": 1238.106918323483
+        },
+        "workload:http2-concurrency:cpu_avg_percent": {
+          "max": 64.868045145715,
+          "median": 63.44722242348176,
+          "min": 56.28777008814243
+        },
+        "workload:http2-concurrency:p50_ms": {
+          "max": 2.4859999999999998,
+          "median": 2.129,
+          "min": 1.975
+        },
+        "workload:http2-concurrency:p95_ms": {
+          "max": 6.526,
+          "median": 6.4,
+          "min": 5.852
+        },
+        "workload:http2-concurrency:p99_ms": {
+          "max": 6.887,
+          "median": 6.753,
+          "min": 6.630999999999999
+        },
+        "workload:http2-concurrency:rss_peak_bytes": {
+          "max": 108863488,
+          "median": 108384256,
+          "min": 105897984
+        },
+        "workload:http2-concurrency:throughput_rps": {
+          "max": 3204.135464530676,
+          "median": 3065.3561540071637,
+          "min": 2822.149415299193
+        },
+        "workload:large-body:cpu_avg_percent": {
+          "max": 150.17267991813657,
+          "median": 143.2006293775121,
+          "min": 143.1105567302681
+        },
+        "workload:large-body:p50_ms": {
+          "max": 37.13726904243231,
+          "median": 31.902205024380237,
+          "min": 30.936215014662594
+        },
+        "workload:large-body:p95_ms": {
+          "max": 45.66857998725027,
+          "median": 41.69535299297422,
+          "min": 38.70603698305786
+        },
+        "workload:large-body:p99_ms": {
+          "max": 45.66857998725027,
+          "median": 41.69535299297422,
+          "min": 38.70603698305786
+        },
+        "workload:large-body:rss_peak_bytes": {
+          "max": 114495488,
+          "median": 112078848,
+          "min": 108814336
+        },
+        "workload:large-body:throughput_rps": {
+          "max": 290.7676191695536,
+          "median": 279.11840512640975,
+          "min": 247.26457903376624
+        },
+        "workload:late-denial:cpu_avg_percent": {
+          "max": 61.32941769733431,
+          "median": 58.31932481533871,
+          "min": 57.249876443608805
+        },
+        "workload:late-denial:p50_ms": {
+          "max": 2.819921006448567,
+          "median": 2.663798979483545,
+          "min": 2.4833009811118245
+        },
+        "workload:late-denial:p95_ms": {
+          "max": 5.523815983906388,
+          "median": 4.584442998748273,
+          "min": 4.458480980247259
+        },
+        "workload:late-denial:p99_ms": {
+          "max": 14.678202976938337,
+          "median": 6.322291970718652,
+          "min": 6.061515014152974
+        },
+        "workload:late-denial:rss_peak_bytes": {
+          "max": 81649664,
+          "median": 81453056,
+          "min": 80883712
+        },
+        "workload:late-denial:throughput_rps": {
+          "max": 3346.0764895245707,
+          "median": 3173.9897889680087,
+          "min": 3084.7223623694763
+        },
+        "workload:multi-worker-isolation:cpu_avg_percent": {
+          "max": 72.49168120940726,
+          "median": 71.25911029528848,
+          "min": 70.8628644734275
+        },
+        "workload:multi-worker-isolation:p50_ms": {
+          "max": 3.298828029073775,
+          "median": 2.6375310262665153,
+          "min": 2.2420480381697416
+        },
+        "workload:multi-worker-isolation:p95_ms": {
+          "max": 7.821928011253476,
+          "median": 7.393979001790285,
+          "min": 5.7386879925616086
+        },
+        "workload:multi-worker-isolation:p99_ms": {
+          "max": 9.675305976998061,
+          "median": 8.652487013023347,
+          "min": 6.901426997501403
+        },
+        "workload:multi-worker-isolation:rss_peak_bytes": {
+          "max": 108654592,
+          "median": 108335104,
+          "min": 106086400
+        },
+        "workload:multi-worker-isolation:throughput_rps": {
+          "max": 3548.8747328365207,
+          "median": 3475.912863474909,
+          "min": 2792.9003635206427
+        },
+        "workload:response-cancellation-batch-1:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-1:cpu_avg_percent": {
+          "max": 16.978258128565717,
+          "median": 14.8461513215154,
+          "min": 13.796501060427946
+        },
+        "workload:response-cancellation-batch-1:p50_ms": {
+          "max": 101.41008003847674,
+          "median": 101.04607295943424,
+          "min": 100.81845702370629
+        },
+        "workload:response-cancellation-batch-1:p95_ms": {
+          "max": 103.5934470128268,
+          "median": 102.95610100729391,
+          "min": 101.51553299510852
+        },
+        "workload:response-cancellation-batch-1:p99_ms": {
+          "max": 104.12261902820319,
+          "median": 103.01215603249148,
+          "min": 101.92051099147648
+        },
+        "workload:response-cancellation-batch-1:rss_peak_bytes": {
+          "max": 108654592,
+          "median": 108126208,
+          "min": 106323968
+        },
+        "workload:response-cancellation-batch-1:rss_recovery_bytes": {
+          "max": 108580864,
+          "median": 108130304,
+          "min": 106364928
+        },
+        "workload:response-cancellation-batch-1:throughput_rps": {
+          "max": 117.22166086673646,
+          "median": 115.97045687943299,
+          "min": 115.87277344184083
+        },
+        "workload:response-cancellation-batch-2:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-2:cpu_avg_percent": {
+          "max": 17.280179213029395,
+          "median": 16.263439922487475,
+          "min": 15.493908333268843
+        },
+        "workload:response-cancellation-batch-2:p50_ms": {
+          "max": 100.95525300130248,
+          "median": 100.515220023226,
+          "min": 100.48849898157641
+        },
+        "workload:response-cancellation-batch-2:p95_ms": {
+          "max": 101.85331600951031,
+          "median": 101.2614700011909,
+          "min": 100.92708101728931
+        },
+        "workload:response-cancellation-batch-2:p99_ms": {
+          "max": 101.86647000955418,
+          "median": 101.79904400138184,
+          "min": 101.66389599908143
+        },
+        "workload:response-cancellation-batch-2:rss_peak_bytes": {
+          "max": 108601344,
+          "median": 108138496,
+          "min": 106364928
+        },
+        "workload:response-cancellation-batch-2:rss_recovery_bytes": {
+          "max": 108601344,
+          "median": 108138496,
+          "min": 105836544
+        },
+        "workload:response-cancellation-batch-2:throughput_rps": {
+          "max": 116.98212495944954,
+          "median": 116.80292750296913,
+          "min": 116.79742624555189
+        },
+        "workload:response-cancellation-batch-3:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-3:cpu_avg_percent": {
+          "max": 18.626760446412053,
+          "median": 17.47061022646869,
+          "min": 14.632211145180124
+        },
+        "workload:response-cancellation-batch-3:p50_ms": {
+          "max": 100.88829800952226,
+          "median": 100.476116000209,
+          "min": 100.47296097036451
+        },
+        "workload:response-cancellation-batch-3:p95_ms": {
+          "max": 101.81567497784272,
+          "median": 101.20507597457618,
+          "min": 101.03164601605386
+        },
+        "workload:response-cancellation-batch-3:p99_ms": {
+          "max": 101.86872503254563,
+          "median": 101.85942699899897,
+          "min": 101.7801039852202
+        },
+        "workload:response-cancellation-batch-3:rss_peak_bytes": {
+          "max": 108601344,
+          "median": 108154880,
+          "min": 105861120
+        },
+        "workload:response-cancellation-batch-3:rss_recovery_bytes": {
+          "max": 108601344,
+          "median": 108154880,
+          "min": 105668608
+        },
+        "workload:response-cancellation-batch-3:throughput_rps": {
+          "max": 117.04515125776017,
+          "median": 116.9613226129734,
+          "min": 116.91738829548638
+        },
+        "workload:small-body:cpu_avg_percent": {
+          "max": 85.40259932623316,
+          "median": 71.65735602595261,
+          "min": 69.96198755674841
+        },
+        "workload:small-body:p50_ms": {
+          "max": 6.101667997427285,
+          "median": 5.277235002722591,
+          "min": 4.446453996933997
+        },
+        "workload:small-body:p95_ms": {
+          "max": 15.281335974577814,
+          "median": 13.467003998812288,
+          "min": 9.948683029506356
+        },
+        "workload:small-body:p99_ms": {
+          "max": 17.899269005283713,
+          "median": 15.767022036015987,
+          "min": 11.625704995822161
+        },
+        "workload:small-body:rss_peak_bytes": {
+          "max": 83279872,
+          "median": 83091456,
+          "min": 82784256
+        },
+        "workload:small-body:throughput_rps": {
+          "max": 2391.727209304296,
+          "median": 2327.482128329764,
+          "min": 2320.5922126181135
+        }
+      },
+      "repetitions": 3,
+      "ruleset": "minimal",
+      "variant": "native"
+    },
+    {
+      "metrics": {
+        "startup_configure_s": {
+          "max": 2.5604476900189184,
+          "median": 2.5582274119951762,
+          "min": 2.4425553230103105
+        },
+        "workload:benign-pass:cpu_avg_percent": {
+          "max": 74.53137202849089,
+          "median": 65.8735860944819,
+          "min": 54.54628435426977
+        },
+        "workload:benign-pass:p50_ms": {
+          "max": 7.468058029189706,
+          "median": 5.633492022752762,
+          "min": 5.509880022145808
+        },
+        "workload:benign-pass:p95_ms": {
+          "max": 25.09928197832778,
+          "median": 21.63885999470949,
+          "min": 19.91610397817567
+        },
+        "workload:benign-pass:p99_ms": {
+          "max": 29.447366017848253,
+          "median": 26.24868502607569,
+          "min": 22.83074299339205
+        },
+        "workload:benign-pass:rss_peak_bytes": {
+          "max": 230301696,
+          "median": 223244288,
+          "min": 223121408
+        },
+        "workload:benign-pass:throughput_rps": {
+          "max": 1898.445085737701,
+          "median": 1697.1167356558599,
+          "min": 1651.0831708486458
+        },
+        "workload:early-denial:cpu_avg_percent": {
+          "max": 68.60392687285584,
+          "median": 67.92386957507249,
+          "min": 63.974393343348744
+        },
+        "workload:early-denial:p50_ms": {
+          "max": 3.3546439954079688,
+          "median": 2.686642052140087,
+          "min": 2.2879859898239374
+        },
+        "workload:early-denial:p95_ms": {
+          "max": 5.558972014114261,
+          "median": 5.069834995083511,
+          "min": 5.012108013033867
+        },
+        "workload:early-denial:p99_ms": {
+          "max": 9.255626006051898,
+          "median": 7.065503974445164,
+          "min": 5.870184977538884
+        },
+        "workload:early-denial:rss_peak_bytes": {
+          "max": 230301696,
+          "median": 223244288,
+          "min": 223121408
+        },
+        "workload:early-denial:throughput_rps": {
+          "max": 3871.5928129048666,
+          "median": 3174.3827328820107,
+          "min": 3132.2418387333078
+        },
+        "workload:fragmented-upload:cpu_avg_percent": {
+          "max": 114.17382322625977,
+          "median": 109.24848587443468,
+          "min": 101.43476839673843
+        },
+        "workload:fragmented-upload:p50_ms": {
+          "max": 9.966937999706715,
+          "median": 8.210208034142852,
+          "min": 7.380092982202768
+        },
+        "workload:fragmented-upload:p95_ms": {
+          "max": 16.101468005217612,
+          "median": 15.352676040492952,
+          "min": 11.260782019235194
+        },
+        "workload:fragmented-upload:p99_ms": {
+          "max": 16.136905003804713,
+          "median": 15.963410027325153,
+          "min": 11.900531011633575
+        },
+        "workload:fragmented-upload:rss_peak_bytes": {
+          "max": 259231744,
+          "median": 249786368,
+          "min": 246153216
+        },
+        "workload:fragmented-upload:throughput_rps": {
+          "max": 1356.2290212134646,
+          "median": 1296.3945158142199,
+          "min": 1257.507518152498
+        },
+        "workload:http2-concurrency:cpu_avg_percent": {
+          "max": 68.03015167374916,
+          "median": 66.89545228918587,
+          "min": 59.64960353049743
+        },
+        "workload:http2-concurrency:p50_ms": {
+          "max": 3.979,
+          "median": 3.628,
+          "min": 2.101
+        },
+        "workload:http2-concurrency:p95_ms": {
+          "max": 7.957000000000001,
+          "median": 7.655,
+          "min": 5.725
+        },
+        "workload:http2-concurrency:p99_ms": {
+          "max": 8.562999999999999,
+          "median": 7.835999999999999,
+          "min": 5.856
+        },
+        "workload:http2-concurrency:rss_peak_bytes": {
+          "max": 251174912,
+          "median": 246206464,
+          "min": 244674560
+        },
+        "workload:http2-concurrency:throughput_rps": {
+          "max": 3023.8055186126444,
+          "median": 2338.877550094513,
+          "min": 2111.9321953965614
+        },
+        "workload:large-body:cpu_avg_percent": {
+          "max": 155.94939368083692,
+          "median": 153.11701532623673,
+          "min": 148.07659626073834
+        },
+        "workload:large-body:p50_ms": {
+          "max": 41.438285959884524,
+          "median": 37.86175599088892,
+          "min": 34.632989030797035
+        },
+        "workload:large-body:p95_ms": {
+          "max": 47.893225972075015,
+          "median": 45.3701899969019,
+          "min": 42.73058602120727
+        },
+        "workload:large-body:p99_ms": {
+          "max": 47.893225972075015,
+          "median": 45.3701899969019,
+          "min": 42.73058602120727
+        },
+        "workload:large-body:rss_peak_bytes": {
+          "max": 259457024,
+          "median": 251822080,
+          "min": 249786368
+        },
+        "workload:large-body:throughput_rps": {
+          "max": 256.0592254295516,
+          "median": 250.53848558017964,
+          "min": 236.53783358234037
+        },
+        "workload:late-denial:cpu_avg_percent": {
+          "max": 69.31454004453214,
+          "median": 68.64807672813332,
+          "min": 67.7271889916172
+        },
+        "workload:late-denial:p50_ms": {
+          "max": 3.7706519942730665,
+          "median": 3.0990950181148946,
+          "min": 2.9197089606896043
+        },
+        "workload:late-denial:p95_ms": {
+          "max": 7.730950019322336,
+          "median": 6.3179240096360445,
+          "min": 5.883159989025444
+        },
+        "workload:late-denial:p99_ms": {
+          "max": 8.497916045598686,
+          "median": 7.080130977556109,
+          "min": 7.028274005278945
+        },
+        "workload:late-denial:rss_peak_bytes": {
+          "max": 230301696,
+          "median": 223244288,
+          "min": 223121408
+        },
+        "workload:late-denial:throughput_rps": {
+          "max": 3534.158139506658,
+          "median": 3199.961681626133,
+          "min": 2882.500972187342
+        },
+        "workload:multi-worker-isolation:cpu_avg_percent": {
+          "max": 78.83539088810448,
+          "median": 78.47482349344452,
+          "min": 76.26647528074686
+        },
+        "workload:multi-worker-isolation:p50_ms": {
+          "max": 3.0787670402787626,
+          "median": 2.7772720204666257,
+          "min": 2.6012820308096707
+        },
+        "workload:multi-worker-isolation:p95_ms": {
+          "max": 8.123004983644933,
+          "median": 7.497523038182408,
+          "min": 7.430598023347557
+        },
+        "workload:multi-worker-isolation:p99_ms": {
+          "max": 12.610370002221316,
+          "median": 8.619905973318964,
+          "min": 8.469452965073287
+        },
+        "workload:multi-worker-isolation:rss_peak_bytes": {
+          "max": 252432384,
+          "median": 246185984,
+          "min": 244404224
+        },
+        "workload:multi-worker-isolation:throughput_rps": {
+          "max": 3328.4757905475562,
+          "median": 3202.6182897610347,
+          "min": 3140.8522266176933
+        },
+        "workload:response-cancellation-batch-1:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-1:cpu_avg_percent": {
+          "max": 15.98679371931333,
+          "median": 15.552013086975178,
+          "min": 13.707214807270024
+        },
+        "workload:response-cancellation-batch-1:p50_ms": {
+          "max": 101.14126099506393,
+          "median": 100.73413897771388,
+          "min": 100.71899101603776
+        },
+        "workload:response-cancellation-batch-1:p95_ms": {
+          "max": 103.0111939762719,
+          "median": 101.5501269721426,
+          "min": 101.40000603860244
+        },
+        "workload:response-cancellation-batch-1:p99_ms": {
+          "max": 103.18574099801481,
+          "median": 101.89652600092813,
+          "min": 101.79376398446038
+        },
+        "workload:response-cancellation-batch-1:rss_peak_bytes": {
+          "max": 252444672,
+          "median": 246235136,
+          "min": 244432896
+        },
+        "workload:response-cancellation-batch-1:rss_recovery_bytes": {
+          "max": 252444672,
+          "median": 246235136,
+          "min": 244432896
+        },
+        "workload:response-cancellation-batch-1:throughput_rps": {
+          "max": 117.43276934539513,
+          "median": 116.84359984886571,
+          "min": 116.58909394497525
+        },
+        "workload:response-cancellation-batch-2:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-2:cpu_avg_percent": {
+          "max": 17.939872068109366,
+          "median": 17.34686871497746,
+          "min": 15.929427057610862
+        },
+        "workload:response-cancellation-batch-2:p50_ms": {
+          "max": 101.08542704256251,
+          "median": 100.46423296444118,
+          "min": 100.43098102323711
+        },
+        "workload:response-cancellation-batch-2:p95_ms": {
+          "max": 102.9879410052672,
+          "median": 101.20713501237333,
+          "min": 101.18526400765404
+        },
+        "workload:response-cancellation-batch-2:p99_ms": {
+          "max": 103.91378396889195,
+          "median": 101.97315900586545,
+          "min": 101.31721198558807
+        },
+        "workload:response-cancellation-batch-2:rss_peak_bytes": {
+          "max": 252444672,
+          "median": 246239232,
+          "min": 244449280
+        },
+        "workload:response-cancellation-batch-2:rss_recovery_bytes": {
+          "max": 251076608,
+          "median": 246239232,
+          "min": 244449280
+        },
+        "workload:response-cancellation-batch-2:throughput_rps": {
+          "max": 116.74841535598956,
+          "median": 116.61888668326831,
+          "min": 116.3758331200454
+        },
+        "workload:response-cancellation-batch-3:backend_upstream_resets": {
+          "max": 24,
+          "median": 24,
+          "min": 24
+        },
+        "workload:response-cancellation-batch-3:cpu_avg_percent": {
+          "max": 18.56482129371752,
+          "median": 17.468880108992817,
+          "min": 17.433059919657715
+        },
+        "workload:response-cancellation-batch-3:p50_ms": {
+          "max": 100.70918203564361,
+          "median": 100.58028099592775,
+          "min": 100.4896709928289
+        },
+        "workload:response-cancellation-batch-3:p95_ms": {
+          "max": 101.48670896887779,
+          "median": 100.94987298361957,
+          "min": 100.86847102502361
+        },
+        "workload:response-cancellation-batch-3:p99_ms": {
+          "max": 102.03499504132196,
+          "median": 101.63272195495665,
+          "min": 101.15082998527214
+        },
+        "workload:response-cancellation-batch-3:rss_peak_bytes": {
+          "max": 251084800,
+          "median": 246239232,
+          "min": 244461568
+        },
+        "workload:response-cancellation-batch-3:rss_recovery_bytes": {
+          "max": 251019264,
+          "median": 246034432,
+          "min": 244461568
+        },
+        "workload:response-cancellation-batch-3:throughput_rps": {
+          "max": 116.9498952830118,
+          "median": 116.91539654384023,
+          "min": 116.89104821028427
+        },
+        "workload:small-body:cpu_avg_percent": {
+          "max": 91.7459992824048,
+          "median": 89.5002663598735,
+          "min": 84.76648188290082
+        },
+        "workload:small-body:p50_ms": {
+          "max": 6.089014990720898,
+          "median": 5.034881003666669,
+          "min": 4.810530983377248
+        },
+        "workload:small-body:p95_ms": {
+          "max": 13.507068972103298,
+          "median": 12.420685030519962,
+          "min": 12.231128988787532
+        },
+        "workload:small-body:p99_ms": {
+          "max": 17.59616896742955,
+          "median": 13.769050012342632,
+          "min": 12.875305954366922
+        },
+        "workload:small-body:rss_peak_bytes": {
+          "max": 231882752,
+          "median": 224825344,
+          "min": 224681984
+        },
+        "workload:small-body:throughput_rps": {
+          "max": 2623.9431011577503,
+          "median": 2463.696357752487,
+          "min": 2036.5269096051754
+        }
+      },
+      "repetitions": 3,
+      "ruleset": "minimal",
+      "variant": "wasm"
+    }
+  ]
+}

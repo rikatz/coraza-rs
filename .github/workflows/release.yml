@@ -31,7 +31,7 @@ jobs:
     permissions:
       # GoReleaser creates the GitHub release and its assets.
       contents: write
-      # Push the WASMPlugin images to GHCR.
+      # Push the WasmPlugin and native Envoy images to GHCR.
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,6 +39,12 @@ jobs:
           # Full history and tags so GoReleaser can resolve the version.
           fetch-depth: 0
           persist-credentials: false
+
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
       - name: Set up Rust
         uses: $/.github/actions/setup-rust
@@ -85,6 +91,113 @@ jobs:
           link_stubs target/wasm32-wasip1/release/envoy_coraza.wasm release-artifacts/coraza-rs.wasm
           cargo build --locked --release --target wasm32-wasip1 -p envoy-coraza --features envoy-coraza/embed-crs
           link_stubs target/wasm32-wasip1/release/envoy_coraza.wasm release-artifacts/coraza-rs-crs.wasm
+
+      - name: Build and verify native release artifacts
+        env:
+          ENVOY_IMAGE: envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de
+          SDK_COMMIT: 9e5580933739775e8bce696a57a2e1bc99368f23
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/.native-build
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --file Dockerfile.goreleaser-dynamic --target artifacts \
+            --build-arg "ENVOY_IMAGE=$ENVOY_IMAGE" --build-arg CARGO_FEATURES= \
+            --output "type=local,dest=release-artifacts/.native-build/dynamic" .
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --file Dockerfile.goreleaser-dynamic --target artifacts \
+            --build-arg "ENVOY_IMAGE=$ENVOY_IMAGE" --build-arg CARGO_FEATURES=embed-crs \
+            --output "type=local,dest=release-artifacts/.native-build/dynamic-crs" .
+
+          cp release-artifacts/.native-build/dynamic/linux_amd64/coraza-rs-dynamic.so \
+            release-artifacts/coraza-rs-dynamic.so
+          cp release-artifacts/.native-build/dynamic/linux_arm64/coraza-rs-dynamic.so \
+            release-artifacts/coraza-rs-dynamic-linux-arm64.so
+          cp release-artifacts/.native-build/dynamic-crs/linux_amd64/coraza-rs-dynamic.so \
+            release-artifacts/coraza-rs-dynamic-crs.so
+          cp release-artifacts/.native-build/dynamic-crs/linux_arm64/coraza-rs-dynamic.so \
+            release-artifacts/coraza-rs-dynamic-crs-linux-arm64.so
+
+          verify_elf() {
+            local library=$1 machine=$2
+            readelf -h "$library" | grep --fixed-strings --quiet "$machine"
+            for hook in envoy_dynamic_module_on_program_init envoy_dynamic_module_on_http_filter_config_new \
+              envoy_dynamic_module_on_http_filter_request_headers envoy_dynamic_module_on_http_filter_response_headers; do
+              readelf --wide --dyn-syms "$library" | grep --fixed-strings --quiet "$hook"
+            done
+            readelf --wide --dyn-syms "$library" | grep --fixed-strings --quiet envoy_dynamic_module_callback_http_send_response
+          }
+          for library in release-artifacts/coraza-rs-dynamic.so release-artifacts/coraza-rs-dynamic-crs.so; do
+            verify_elf "$library" 'Advanced Micro Devices X86-64'
+            ldd "$library" | tee "$library.ldd"
+            if grep --quiet 'not found' "$library.ldd"; then
+              printf 'unresolved amd64 module dependency: %s\n' "$library" >&2
+              exit 1
+            fi
+          done
+          for library in release-artifacts/coraza-rs-dynamic-linux-arm64.so release-artifacts/coraza-rs-dynamic-crs-linux-arm64.so; do
+            verify_elf "$library" AArch64
+          done
+
+          docker buildx build --platform linux/amd64 --load \
+            --file Dockerfile.goreleaser-dynamic --build-arg "ENVOY_IMAGE=$ENVOY_IMAGE" \
+            --build-arg CARGO_FEATURES= --tag coraza-rs-dynamic-amd64-smoke .
+          ENVOY_IMAGE=coraza-rs-dynamic-amd64-smoke ENVOY_PLATFORM=linux/amd64 \
+            bash examples/envoy-coraza-dynamic/test-derived-image-smoke.sh
+          docker buildx build --platform linux/arm64 --load \
+            --file Dockerfile.goreleaser-dynamic --build-arg "ENVOY_IMAGE=$ENVOY_IMAGE" \
+            --build-arg CARGO_FEATURES= --tag coraza-rs-dynamic-arm64-smoke .
+          ENVOY_IMAGE=coraza-rs-dynamic-arm64-smoke ENVOY_PLATFORM=linux/arm64 \
+            bash examples/envoy-coraza-dynamic/test-derived-image-smoke.sh
+          docker buildx build --platform linux/amd64 --load \
+            --file Dockerfile.goreleaser-dynamic --build-arg "ENVOY_IMAGE=$ENVOY_IMAGE" \
+            --build-arg CARGO_FEATURES=embed-crs --tag coraza-rs-dynamic-crs-amd64-smoke .
+          ENVOY_IMAGE=coraza-rs-dynamic-crs-amd64-smoke ENVOY_PLATFORM=linux/amd64 \
+            bash examples/envoy-coraza-dynamic/test-derived-image-smoke.sh
+          docker buildx build --platform linux/arm64 --load \
+            --file Dockerfile.goreleaser-dynamic --build-arg "ENVOY_IMAGE=$ENVOY_IMAGE" \
+            --build-arg CARGO_FEATURES=embed-crs --tag coraza-rs-dynamic-crs-arm64-smoke .
+          ENVOY_IMAGE=coraza-rs-dynamic-crs-arm64-smoke ENVOY_PLATFORM=linux/arm64 \
+            bash examples/envoy-coraza-dynamic/test-derived-image-smoke.sh
+
+          write_provenance() {
+            local architecture=$1 features=$2 library=$3 toolchain=$4 output=$5 verification=$6
+            python3 - "$architecture" "$features" "$library" "$toolchain" "$output" "$verification" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+
+          architecture, features, library, toolchain, output, verification = sys.argv[1:]
+          versions = pathlib.Path(toolchain).read_text().splitlines()
+          manifest = {
+              "repository_revision": os.environ["GITHUB_SHA"],
+              "sdk_commit": os.environ["SDK_COMMIT"],
+              "envoy_image": os.environ["ENVOY_IMAGE"],
+              "architecture": architecture,
+              "target": {"amd64": "x86_64-unknown-linux-gnu", "arm64": "aarch64-unknown-linux-gnu"}[architecture],
+              "rust_version": versions[0],
+              "clang_version": versions[1],
+              "enabled_features": [] if features == "default" else [features],
+              "library_sha256": hashlib.sha256(pathlib.Path(library).read_bytes()).hexdigest(),
+              "arm64_verification": verification,
+          }
+          pathlib.Path(output).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+          }
+          verification=qemu-load-smoke-passed
+          write_provenance amd64 default release-artifacts/coraza-rs-dynamic.so \
+            release-artifacts/.native-build/dynamic/linux_amd64/toolchain.txt \
+            release-artifacts/coraza-rs-dynamic.provenance.json "$verification"
+          write_provenance arm64 default release-artifacts/coraza-rs-dynamic-linux-arm64.so \
+            release-artifacts/.native-build/dynamic/linux_arm64/toolchain.txt \
+            release-artifacts/coraza-rs-dynamic-linux-arm64.provenance.json "$verification"
+          write_provenance amd64 embed-crs release-artifacts/coraza-rs-dynamic-crs.so \
+            release-artifacts/.native-build/dynamic-crs/linux_amd64/toolchain.txt \
+            release-artifacts/coraza-rs-dynamic-crs.provenance.json "$verification"
+          write_provenance arm64 embed-crs release-artifacts/coraza-rs-dynamic-crs-linux-arm64.so \
+            release-artifacts/.native-build/dynamic-crs/linux_arm64/toolchain.txt \
+            release-artifacts/coraza-rs-dynamic-crs-linux-arm64.provenance.json "$verification"
 
       - name: Login to GHCR
         env:

@@ -61,6 +61,15 @@ manifest.
 - `--rules`: SecLang configuration file to load. Required in conformance mode.
 - `--test-dir`: Directory searched recursively for FTW `.yaml` and `.yml`
   tests. Required in conformance mode.
+- `--target-addr` and `--target-port`: destination for go-ftw requests. The
+  Rust server still starts on port 8080 to validate strict rule loading; set
+  these flags when driving a separately hosted Envoy filter.
+- `--include-tests`: optional regular expression selecting test IDs for a
+  focused diagnostic run. The manifest retains both the full inventory and
+  selected counts; omit it for conformance acceptance runs.
+- `--log-file`: append to an externally captured WAF log instead of the
+  temporary Rust-server log. This lets FTW inspect native/Wasm Envoy logs;
+  capture output containing the per-request `X-CRS-Test` marker.
 - `--max-tests`: Maximum number of test files to run; zero means all files.
   This limits files only. The runner reports inventory and selected counts
   separately for files, test cases and stages.
@@ -72,8 +81,8 @@ manifest.
 - `--failed-out`: Write failed test IDs to this file.
 - `--manifest`: Machine-readable conformance result path; default
   `ftw-result.json`. The manifest records mode, strictness, expected counts,
-  inventory and selected counts, loaded rule count, run results and every
-  failure.
+  inventory and selected counts, loaded rule count, every test outcome and
+  duration, triggered rule IDs, and every failure.
 
 ## CRS suite
 
