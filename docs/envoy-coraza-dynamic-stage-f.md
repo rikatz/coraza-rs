@@ -107,8 +107,9 @@ The divergence ledger now records expected-status assertions (null where FTW
 does not assert a status), observed status/path, triggered-rule arrays for the
 native, Wasm and standalone engine, and a disposition for each of the 54 shared
 failures. Eleven have status 400 with no parsed path, a candidate Envoy/harness
-pre-routing rejection; the other cases have varied 200/4xx status-path pairs
-but no native or Wasm expected-rule match. All 54 are classified as connector-or-harness, not
+pre-routing rejection. The other cases have varied 200/4xx status-path pairs;
+some trigger rules in one or both adapters but still miss FTW's expected logs,
+while others trigger none. All 54 are classified as connector-or-harness, not
 engine-wide, with exact attribution explicitly **undecided** because the
 filter-visible request bytes were not retained. The ledger names the bounded
 filter-input capture needed to decide those cases. A complete Native-vs-Wasm
