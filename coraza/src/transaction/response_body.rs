@@ -24,7 +24,7 @@ use super::{
     Interruption, Transaction,
     body_buffer::BodyBuffer,
     request_body::{
-        process_custom_body_processor, publish_json_arguments, read_json_body, selected_custom_body_processor,
+        JsonBody, process_custom_body_processor, publish_json_arguments, read_json_body, selected_custom_body_processor,
     },
     variables::BodyProcessor,
 };
@@ -85,7 +85,8 @@ impl Transaction {
                         }
                     }
                 }
-                if let Err(error) = self.response_body_buffer.accept(body) {
+                let budget = self.body_budget.as_ref();
+                if let Err(error) = self.response_body_buffer.accept(body, budget) {
                     self.finalization_errors.push(Failure::new(&error));
                     ingest_error = true;
                 }
@@ -124,7 +125,19 @@ impl Transaction {
             }
         }
 
+        if self.body_budget_exhausted() {
+            self.outbound_data_error.set("1");
+            self.interrupt(0, "deny", 500, "");
+            if self.interruption.is_some() {
+                return self.interruption.clone();
+            }
+        }
+
         self.run_phase(RulePhase::ResponseBody);
+        if self.body_budget_exhausted() {
+            self.outbound_data_error.set("1");
+            self.interrupt(0, "deny", 500, "");
+        }
         self.interruption.clone()
     }
 
@@ -143,16 +156,24 @@ impl Transaction {
         if let Some(BodyProcessor::Json) = self.response_body_processor {
             // Arguments are published before the error is checked so a valid
             // prefix stays inspectable; see Go Coraza `json.go:74-97`.
-            let parsed = read_json_body(
+            let JsonBody {
+                arguments,
+                truncated,
+                error,
+                charged,
+            } = read_json_body(
                 body,
                 self.config.response_body_json_depth_limit,
                 self.config.argument_limit,
+                self.body_budget.as_ref(),
             );
-            publish_json_arguments(self, &parsed.arguments, true);
-            if parsed.truncated {
+            publish_json_arguments(self, &arguments, true);
+            drop(arguments);
+            self.release_body_memory(charged);
+            if truncated {
                 self.arguments_limit_reached.set("1");
             }
-            match parsed.error {
+            match error {
                 Some(message) => {
                     self.log_body_processor_error(false, "JSON", &message);
                     self.res_body_error.set("1");
@@ -160,9 +181,13 @@ impl Transaction {
                     self.res_body_processor_error.set("1");
                     self.res_body_processor_error_msg.set(message);
                 },
-                None => self.set_tx_variable("json_response_body", body),
+                None => {
+                    if self.try_charge_body_memory(body.len()) {
+                        self.set_tx_variable("json_response_body", body);
+                    }
+                },
             }
-        } else {
+        } else if self.try_charge_body_memory(body.len()) {
             self.response_body.set(body);
         }
     }

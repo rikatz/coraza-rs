@@ -26,10 +26,28 @@ from a local file in the pinned Envoy image, never from a remote module source.
 
 - Tested host: digest-pinned standalone Envoy 1.40.0 on Linux/amd64 with glibc.
   This is not an Istio compatibility claim.
-- Request and response retained-body ceilings are 16 MiB and 1 MiB per stream;
-  a checked module-wide admission budget limits retained bodies to 64 MiB.
-  Admission exhaustion fails closed. These limits do not bound Envoy's total
-  process RSS.
+- Request and response retained-body ceilings are 16 MiB and 1 MiB per stream.
+  A checked module-wide admission budget of 64 MiB covers Envoy's buffered body
+  copy, the module's contiguous copy, and the Coraza transaction's body
+  buffers, retained body variables, parser collection growth, selected rule
+  values, transformation output, and matched values. Body buffers reserve their
+  requested growth directly; parsed JSON rows and collection entries are
+  charged before they are inserted; XML and multipart allocations are bounded
+  before parsing by element/part/header counts plus copied bytes. Macro
+  expansions and TX/ENV writes are charged before their strings and map copies
+  grow. Body storage is charged before it grows;
+  admission exhaustion fails closed with 503 for requests and 502 for responses,
+  including in `DetectionOnly`. The native engine charges nothing when no budget
+  is attached.
+- Built-in transformation bounds cover the expanding encoders (`urlEncode`,
+  `utf8ToUnicode`, `base64Encode`, `hexEncode`), hashes, length, and case
+  mapping. A custom transformation has no declared bound, so a transaction with
+  a budget fails closed before invoking it rather than guessing its output.
+- The admission budget is not a hard process-RSS cap. It does not account for
+  Envoy memory outside the body copies, allocator slack beyond the requested
+  capacity, audit-log copies made at finalization, operator-internal buffers, or
+  host custom operator/transformation output. A stream under pressure can be
+  rejected before reaching its individual body ceiling.
 - Request/response trailers are bounded and passed through when allowed, but
   trailer values are not SecLang rule variables. Residual compressed bodies,
   WebSocket/CONNECT inspection, HTTP/3, and indefinite SSE/gRPC bodies are not

@@ -31,6 +31,8 @@ use std::{
 #[cfg(test)]
 use std::{cell::Cell, path::Path};
 
+use super::BodyBudget;
+
 /// A body-buffer operation a test can force to fail.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,12 +155,14 @@ impl BodyBuffer {
     /// Retain `data`, truncated to the remaining body limit, and count it as supplied.
     ///
     /// Returns the number of bytes retained. A write failure discards retained bytes and
-    /// removes the spill file before the error is returned.
+    /// removes the spill file before the error is returned. When `budget` is set, the
+    /// retained bytes are charged before the buffer grows.
     ///
     /// # Errors
     ///
-    /// Returns an error when the body cannot be retained in memory or spilled to disk.
-    pub(super) fn accept(&mut self, data: &[u8]) -> io::Result<usize> {
+    /// Returns an error when the body cannot be admitted by the budget, retained in
+    /// memory, or spilled to disk.
+    pub(super) fn accept(&mut self, data: &[u8], budget: Option<&BodyBudget>) -> io::Result<usize> {
         #[cfg(test)]
         if take_injected_failure(BufferFailure::Accept) {
             return Err(io::Error::other("injected body buffer failure"));
@@ -171,8 +175,17 @@ impl BodyBuffer {
         if retained.len() < data.len() {
             self.truncated = true;
         }
+        let charged = budget.map_or(0, |_| retained.len());
+        if let Some(budget) = budget
+            && !budget.try_charge(charged)
+        {
+            return Err(io::Error::other("retained body budget exhausted"));
+        }
         if let Err(error) = self.write(retained) {
             self.discard();
+            if let Some(budget) = budget {
+                budget.release(charged);
+            }
             return Err(error);
         }
         Ok(retained.len())
@@ -206,6 +219,9 @@ impl BodyBuffer {
             handle.seek(SeekFrom::End(0))?;
             handle.write_all(data)?;
         } else {
+            self.memory
+                .try_reserve_exact(data.len())
+                .map_err(|_error| io::Error::other("body buffer allocation failed"))?;
             self.memory.extend_from_slice(data);
         }
         self.length = target;
@@ -324,13 +340,13 @@ mod tests {
     #[test]
     fn keeps_bytes_in_memory_up_to_and_including_the_memory_limit() {
         let mut buffer = BodyBuffer::new(4, 8);
-        assert_eq!(buffer.accept(b"abcd").unwrap(), 4);
+        assert_eq!(buffer.accept(b"abcd", None).unwrap(), 4);
         assert_eq!(buffer.contiguous().unwrap().as_ref(), b"abcd");
         assert!(buffer.spill_path().is_none());
         assert_eq!(buffer.stats().retained, 4);
         assert!(!buffer.stats().spilled);
 
-        assert_eq!(buffer.accept(b"e").unwrap(), 1);
+        assert_eq!(buffer.accept(b"e", None).unwrap(), 1);
         assert!(buffer.spill_path().is_some());
         assert!(buffer.stats().spilled);
     }
@@ -338,7 +354,7 @@ mod tests {
     #[test]
     fn spills_above_the_memory_limit_and_replays_retained_bytes() {
         let mut buffer = BodyBuffer::new(2, 16);
-        assert_eq!(buffer.accept(b"abcdefgh").unwrap(), 8);
+        assert_eq!(buffer.accept(b"abcdefgh", None).unwrap(), 8);
         assert!(buffer.stats().spilled);
         assert_eq!(buffer.len(), 8);
         assert_eq!(buffer.contiguous().unwrap().as_ref(), b"abcdefgh");
@@ -348,7 +364,7 @@ mod tests {
     #[test]
     fn truncates_at_the_body_limit_and_counts_supplied_bytes() {
         let mut buffer = BodyBuffer::new(4, 4);
-        assert_eq!(buffer.accept(b"abcdef").unwrap(), 4);
+        assert_eq!(buffer.accept(b"abcdef", None).unwrap(), 4);
         assert_eq!(buffer.contiguous().unwrap().as_ref(), b"abcd");
         assert_eq!(
             buffer.stats(),
@@ -382,18 +398,18 @@ mod tests {
     #[test]
     fn zero_limit_retains_nothing() {
         let mut buffer = BodyBuffer::new(0, 0);
-        assert_eq!(buffer.accept(b"abc").unwrap(), 0);
+        assert_eq!(buffer.accept(b"abc", None).unwrap(), 0);
         assert_eq!(buffer.stats().supplied, 3);
         assert_eq!(buffer.stats().retained, 0);
         assert!(buffer.stats().truncated);
-        assert_eq!(buffer.accept(b"").unwrap(), 0);
+        assert_eq!(buffer.accept(b"", None).unwrap(), 0);
     }
 
     #[test]
     fn temporary_file_is_removed_when_the_buffer_is_dropped() {
         let path = {
             let mut buffer = BodyBuffer::new(2, 8);
-            buffer.accept(b"abcd").unwrap();
+            buffer.accept(b"abcd", None).unwrap();
             let path = buffer.spill_path().unwrap().to_owned();
             assert!(path.exists(), "spill file {path:?} should exist");
             path

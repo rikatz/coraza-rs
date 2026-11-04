@@ -29,7 +29,7 @@ use crate::{
         RuleOperator, VariableSpec,
         multiphase::{is_multiphase_double_evaluation, multiphase_skip_variable},
     },
-    transaction::Transaction,
+    transaction::{ScopedCredit, Transaction},
     types::{RulePhase, RuleVariable},
 };
 
@@ -183,7 +183,21 @@ impl Rule {
             [DebugField::RuleId(self.metadata.id), DebugField::Phase(phase.as_int())]
         });
         let mut collective_matched_values = Vec::new();
-        let matched_values = self.matches_chain(tx, self.metadata.id, phase, true, 0, &mut collective_matched_values);
+        // Credit for `msg`/`logdata` expansions, held until the retained copies
+        // are charged by `record_match` (or the matches are dropped).
+        let mut expansion_credits = Vec::new();
+        let matched_values = self.matches_chain(
+            tx,
+            self.metadata.id,
+            phase,
+            true,
+            0,
+            &mut collective_matched_values,
+            &mut expansion_credits,
+        );
+        if tx.body_budget_exhausted() {
+            return;
+        }
         if matched_values.is_empty() {
             tx.debug_log(DebugLevel::Debug, "Rule evaluation finished without a match", || {
                 [DebugField::RuleId(self.metadata.id)]
@@ -211,12 +225,21 @@ impl Rule {
                     _ => "custom",
                 });
             tx.record_match(rule, matched_values, disruptive_action);
+            // The retained match storage is charged now, so the expansion
+            // temporaries their buffers came from can return their credit.
+            expansion_credits.clear();
+            if tx.body_budget_exhausted() {
+                return;
+            }
             if let Some(severity) = self.metadata.severity {
                 tx.raise_highest_severity(severity);
             }
         }
 
         for action in &self.actions {
+            if tx.body_budget_exhausted() {
+                break;
+            }
             if action.action_type() != ActionType::Nondisruptive {
                 tx.debug_log(DebugLevel::Debug, "Evaluating action", || {
                     [DebugField::RuleId(self.metadata.id), DebugField::Text(&action.name)]
@@ -242,6 +265,7 @@ impl Rule {
         top_level: bool,
         chain_level: usize,
         collective_matched_values: &mut Vec<MatchData>,
+        expansion_credits: &mut Vec<ScopedCredit>,
     ) -> Vec<MatchData> {
         if !top_level {
             Self::log_chain_evaluation(tx, "Evaluating chain link", id, self.metadata.id, chain_level);
@@ -253,8 +277,15 @@ impl Rule {
             if tx.multiphase_evaluation() && top_level && self.metadata.has_chain && phase < self.chain_min_phase {
                 return Vec::new();
             }
-            let mut matched_values =
-                self.match_values(tx, id, phase, top_level, chain_level, collective_matched_values);
+            let mut matched_values = self.match_values(
+                tx,
+                id,
+                phase,
+                top_level,
+                chain_level,
+                collective_matched_values,
+                expansion_credits,
+            );
             if matched_values.is_empty() {
                 return matched_values;
             }
@@ -263,14 +294,22 @@ impl Rule {
             let mut chain_level = chain_level;
             for link in &self.chain {
                 chain_level += 1;
-                let link_matches = link.matches_chain(tx, id, phase, false, chain_level, collective_matched_values);
+                let link_matches = link.matches_chain(
+                    tx,
+                    id,
+                    phase,
+                    false,
+                    chain_level,
+                    collective_matched_values,
+                    expansion_credits,
+                );
                 if link_matches.is_empty() {
                     return Vec::new();
                 }
                 matched_values.extend(link_matches);
             }
             if !self.chain.is_empty() {
-                let (message, data) = self.describe_match(tx);
+                let (message, data) = self.describe_match(tx, expansion_credits);
                 for matched in matched_values.iter_mut().take(own_matches) {
                     matched.message.clone_from(&message);
                     matched.data.clone_from(&data);
@@ -301,6 +340,10 @@ impl Rule {
 
     /// Match the values selected by this rule and run per-match actions.
     #[expect(
+        clippy::too_many_lines,
+        reason = "selection, transformation and operator accounting stay explicit per value"
+    )]
+    #[expect(
         clippy::too_many_arguments,
         reason = "phase and shared chain state are explicit across recursive rule evaluation"
     )]
@@ -312,11 +355,18 @@ impl Rule {
         top_level: bool,
         chain_level: usize,
         collective_matched_values: &mut Vec<MatchData>,
+        expansion_credits: &mut Vec<ScopedCredit>,
     ) -> Vec<MatchData> {
-        let message = self.metadata.msg.as_ref().map(|value| value.expand(tx));
-        let log_data = self.metadata.log_data.as_ref().map(|value| value.expand(tx));
+        let message = self.metadata.msg.as_ref().map(|value| value.expand_scoped(tx));
+        let log_data = self.metadata.log_data.as_ref().map(|value| value.expand_scoped(tx));
         let severity = self.metadata.severity.map_or("unknown", |value| value.as_str());
-        tx.set_rule_variables(id, message.clone(), &self.metadata.rev, log_data.clone(), severity);
+        tx.set_rule_variables(
+            id,
+            message.as_deref(),
+            &self.metadata.rev,
+            log_data.as_deref(),
+            severity,
+        );
 
         let Some(operator) = &self.operator else {
             if !self.variables.is_empty() || self.metadata.sec_mark.is_some() {
@@ -331,7 +381,7 @@ impl Rule {
             tx.record_matched_variable(&matched);
             self.run_nondisruptive_actions(tx);
             if self.chain.is_empty() {
-                (matched.message, matched.data) = self.describe_match(tx);
+                (matched.message, matched.data) = self.describe_match(tx, expansion_credits);
             }
             return vec![matched];
         };
@@ -345,8 +395,42 @@ impl Rule {
             tx.debug_log(DebugLevel::Debug, "Selecting rule variable", || {
                 [DebugField::RuleId(id), DebugField::Variable(variable.variable().name())]
             });
-            for value in tx.find_matches_for_rule(variable, id) {
+            let budgeted = tx.has_body_budget();
+            let used_before = if budgeted { tx.body_memory_used() } else { 0 };
+            let values = tx.find_matches_for_rule(variable, id);
+            let selection_charge = if budgeted {
+                tx.body_memory_used().saturating_sub(used_before)
+            } else {
+                0
+            };
+            // Set when this variable's walk must stop: the loop breaks so the
+            // current value and the values iterator — including every
+            // unconsumed selected copy the charge covers — drop at the `for`
+            // statement's end, before the charge is released below. Returning
+            // from inside the loop would release the credit first and drop the
+            // copies only during the return sequence.
+            let mut selection_stopped = false;
+            for value in values {
+                let transform_charge = if budgeted {
+                    let Some(bound) = self
+                        .metadata
+                        .transformations
+                        .max_output_bytes(value.value.len(), self.metadata.multi_match)
+                    else {
+                        tx.exhaust_body_budget();
+                        selection_stopped = true;
+                        break;
+                    };
+                    bound
+                } else {
+                    0
+                };
+                if budgeted && !tx.try_charge_body_memory(transform_charge) {
+                    selection_stopped = true;
+                    break;
+                }
                 let candidates = self.transform_candidates(tx, id, value.variable, &value.value);
+                let mut keep_transform_charge = false;
                 for candidate in candidates {
                     Self::log_operator_argument(tx, id, value.variable, &candidate);
                     let mut outputs = Outputs::new(self.metadata.capture);
@@ -355,6 +439,7 @@ impl Rule {
                     Self::log_operator_outcome(tx, id, value.variable, outcome);
                     match outcome {
                         OperatorOutcome::Matched => {
+                            keep_transform_charge = true;
                             let mut matched = MatchData::new(value.variable, value.key.clone(), candidate);
                             matched.chain_level = chain_level;
                             if multiphase
@@ -363,9 +448,12 @@ impl Rule {
                                 continue;
                             }
                             tx.record_matched_variable(&matched);
+                            if tx.body_budget_exhausted() {
+                                return matched_values;
+                            }
                             self.run_nondisruptive_actions(tx);
                             if self.chain.is_empty() {
-                                (matched.message, matched.data) = self.describe_match(tx);
+                                (matched.message, matched.data) = self.describe_match(tx, expansion_credits);
                             }
                             matched_values.push(matched);
                         },
@@ -374,6 +462,18 @@ impl Rule {
                         OperatorOutcome::NotMatched | OperatorOutcome::NotInspected => {},
                     }
                 }
+                if budgeted && !keep_transform_charge {
+                    tx.release_body_memory(transform_charge);
+                }
+            }
+            // The `for` statement above has ended, so the values iterator and
+            // every selected copy it still held are dropped on every path —
+            // normal completion, break, or unwind — before this release.
+            if budgeted {
+                tx.release_body_memory(selection_charge);
+            }
+            if selection_stopped {
+                return matched_values;
             }
         }
         matched_values
@@ -437,15 +537,37 @@ impl Rule {
     }
 
     /// Expand this rule's `msg` and `logdata` against the current matched variables.
-    fn describe_match(&self, tx: &Transaction) -> (String, String) {
-        let expand =
-            |value: &Option<crate::operators::Macro>| value.as_ref().map(|value| value.expand(tx)).unwrap_or_default();
-        (expand(&self.metadata.msg), expand(&self.metadata.log_data))
+    ///
+    /// The buffers become the retained match messages, so their expansion
+    /// credit is held in `credits` until `record_match` has charged the
+    /// retained copies and the caller clears the vector.
+    fn describe_match(&self, tx: &Transaction, credits: &mut Vec<ScopedCredit>) -> (String, String) {
+        fn expand(
+            value: &Option<crate::operators::Macro>,
+            tx: &Transaction,
+            credits: &mut Vec<ScopedCredit>,
+        ) -> String {
+            value
+                .as_ref()
+                .map(|value| {
+                    let (text, credit) = value.expand_scoped(tx).into_parts();
+                    credits.push(credit);
+                    text
+                })
+                .unwrap_or_default()
+        }
+        (
+            expand(&self.metadata.msg, tx, credits),
+            expand(&self.metadata.log_data, tx, credits),
+        )
     }
 
     /// Run actions that apply as each rule in a chain matches.
     fn run_nondisruptive_actions(&self, tx: &mut Transaction) {
         for action in &self.actions {
+            if tx.body_budget_exhausted() {
+                break;
+            }
             if action.action_type() == ActionType::Nondisruptive {
                 tx.debug_log(DebugLevel::Debug, "Evaluating action", || {
                     [DebugField::RuleId(self.metadata.id), DebugField::Text(&action.name)]

@@ -157,7 +157,7 @@ const MAX_BOUNDARY_LEN: usize = 4090;
 /// Go Coraza reads parts with `mime/multipart.Reader.NextPart`, which has no
 /// part limit. Go's `ReadForm` caps a form at 1000 parts; this parser adopts
 /// that constant as a Rust-only budget.
-const MAX_PARTS: usize = 1000;
+pub(super) const MAX_PARTS: usize = 1000;
 
 /// Maximum raw bytes in one part's header block.
 ///

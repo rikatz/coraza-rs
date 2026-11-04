@@ -21,7 +21,7 @@ pub(super) struct Name {
 
 /// An open element
 #[derive(Debug)]
-struct Open {
+pub(super) struct Open {
     /// Parsed element name.
     name: Name,
     /// The name of [`AUTO_CLOSE`] it has, if any: the element is then closed before the

@@ -43,6 +43,7 @@ pub use detection::{DetectSQLi, DetectXSS, detect_sqli, detect_xss};
 #[cfg(feature = "inspect-file")]
 pub use inspect_file::{InspectFile, inspect_file};
 pub use ip::{IpMatch, IpMatchFromDataset, IpMatchFromFile, ip_match, ip_match_from_dataset, ip_match_from_file};
+pub(crate) use macros::ScopedExpansion;
 pub use macros::{Macro, MacroError};
 pub use pattern::{
     Pm, PmFromDataset, PmFromFile, RestPath, Rx, StrMatch, Within, pm, pm_from_dataset, pm_from_file, rest_path, rx,

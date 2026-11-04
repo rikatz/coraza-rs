@@ -24,6 +24,7 @@
 //! phases. Body bytes are retained in a bounded buffer that spills to a temporary file,
 //! and each transaction exposes counters for what it supplied, retained and inspected.
 
+mod body_budget;
 mod body_buffer;
 mod ctl;
 mod request_body;
@@ -40,11 +41,21 @@ use std::{
     time::SystemTime,
 };
 
+pub(crate) use body_budget::ScopedCredit;
+pub use body_budget::{BodyBudget, RetainedBodyBudget};
 use body_buffer::BodyBuffer;
 pub use body_buffer::BodyIngestionStats;
 use request_body::{decode_pair, split_urlencoded};
 use variables::BodyProcessor;
 pub use variables::VariableCollection;
+
+/// Per-entry bound for an `IndexMap` entry, its `KeyValue` vector, and the
+/// key/value allocations on top of their byte lengths.
+pub(crate) const MAP_INSERT_OVERHEAD_BYTES: usize = 512;
+/// Conservative per-match storage charged into a retained matched rule.
+const MATCHED_RULE_MATCH_BYTES: usize = 128;
+/// Conservative fixed storage charged for one retained matched rule.
+const MATCHED_RULE_BYTES: usize = 512;
 
 pub use crate::{actions::RuleMetadata, audit_log::MatchedRule};
 use crate::{
@@ -370,6 +381,15 @@ pub struct Transaction {
     res_body_processor_error_msg: Single,
     /// Highest matched rule severity, or 255 when none matched.
     highest_severity: Single,
+    /// Body-budget bytes charged for `TX` and `ENV` entries this
+    /// transaction's `setvar` and `setenv` actions replaced, keyed by
+    /// `"tx:"`/`"env:"` plus the action's key spelling. Only entries these
+    /// actions charged appear, so a release is always attributed and
+    /// storage they never charged for is never released.
+    set_action_charges: BTreeMap<String, usize>,
+    /// Last field so its drop releases budget credit only after every covered
+    /// allocation above has been dropped.
+    body_budget: Option<BodyBudget>,
 }
 
 /// The `TX` capture keys, `"0"` through `"10"`.
@@ -491,6 +511,7 @@ impl Transaction {
             removed_rule_ids: BTreeSet::new(),
             removed_rule_id_ranges: Vec::new(),
             removed_rule_targets: BTreeMap::new(),
+            set_action_charges: BTreeMap::new(),
             applied_rule_removals: BTreeSet::new(),
             skip_after: None,
             allow: AllowType::Unset,
@@ -588,6 +609,7 @@ impl Transaction {
                 value.set("255");
                 value
             },
+            body_budget: None,
         };
         // Go seeds its capture variables `TX:0`..`TX:10` to empty on every transaction
         // (`internal/corazawaf/waf.go:264-268` in v3.8.1). Seeding them here means the
@@ -703,6 +725,32 @@ impl Transaction {
         matches: Vec<MatchData>,
         disruptive_action: Option<&'static str>,
     ) {
+        if self.has_body_budget() {
+            let match_bytes = matches.iter().fold(0_usize, |total, matched| {
+                total
+                    .saturating_add(matched.key.len())
+                    .saturating_add(matched.value.len())
+                    .saturating_add(matched.message.len())
+                    .saturating_add(matched.data.len())
+                    .saturating_add(MATCHED_RULE_MATCH_BYTES)
+            });
+            let metadata_bytes = [
+                rule.raw.capacity(),
+                rule.tags.iter().map(String::capacity).sum(),
+                rule.rev.capacity(),
+                rule.ver.capacity(),
+                rule.file.capacity(),
+                self.remote_addr.get().len(),
+                self.server_addr.get().len(),
+                self.request_uri.get().len(),
+                self.unique_id.get().len(),
+            ]
+            .into_iter()
+            .fold(MATCHED_RULE_BYTES, usize::saturating_add);
+            if !self.try_charge_body_memory(match_bytes.saturating_add(metadata_bytes)) {
+                return;
+            }
+        }
         let matched = MatchedRule {
             rule,
             matches,
@@ -770,11 +818,87 @@ impl Transaction {
         self.response_body_buffer.stats()
     }
 
+    /// Attach a connector-owned admission budget for body-derived storage.
+    ///
+    /// The engine charges body buffers, retained body variables, parsed body
+    /// arguments, selected rule values, and matched values before their
+    /// backing allocations grow. A failed charge sets
+    /// [`Transaction::body_budget_exhausted`]; the connector must fail the
+    /// stream closed even in `DetectionOnly` mode.
+    /// The first attached budget wins; replacing it would release credit while
+    /// allocations it already covers are still alive.
+    pub fn set_body_budget(&mut self, budget: BodyBudget) {
+        if self.body_budget.is_none() {
+            self.body_budget = Some(budget);
+        }
+    }
+
+    /// Whether a charge against the attached body budget failed.
+    ///
+    /// Always `false` when no budget is attached.
+    pub fn body_budget_exhausted(&self) -> bool {
+        self.body_budget.as_ref().is_some_and(BodyBudget::exhausted)
+    }
+
+    /// Whether a connector attached a body budget.
+    pub(crate) fn has_body_budget(&self) -> bool {
+        self.body_budget.is_some()
+    }
+
+    /// The attached body budget, when there is one.
+    pub(crate) fn body_budget(&self) -> Option<&BodyBudget> {
+        self.body_budget.as_ref()
+    }
+
+    /// Charge body-derived storage before it is allocated.
+    pub(crate) fn try_charge_body_memory(&self, bytes: usize) -> bool {
+        self.body_budget.as_ref().is_none_or(|budget| budget.try_charge(bytes))
+    }
+
+    /// Charge `bytes` and hold them until the returned guard drops.
+    ///
+    /// Returns `None` when no budget is attached or the charge was refused;
+    /// a refusal exhausts the budget, so the stream still fails closed.
+    pub(crate) fn scoped_body_memory(&self, bytes: usize) -> Option<ScopedCredit> {
+        self.body_budget.as_ref().and_then(|budget| budget.scoped(bytes))
+    }
+
+    /// Release body-derived storage whose allocation has been dropped.
+    pub(crate) fn release_body_memory(&self, bytes: usize) {
+        if let Some(budget) = self.body_budget.as_ref() {
+            budget.release(bytes);
+        }
+    }
+
+    /// Body-derived bytes currently charged to this transaction.
+    pub(crate) fn body_memory_used(&self) -> usize {
+        self.body_budget.as_ref().map_or(0, BodyBudget::used)
+    }
+
+    /// Fail the attached budget without allocating.
+    pub(crate) fn exhaust_body_budget(&self) {
+        if let Some(budget) = self.body_budget.as_ref() {
+            budget.exhaust();
+        }
+    }
+
+    /// Charge the conservative storage of inserting `key` and `value` into
+    /// `maps` retained collections before the map grows.
+    pub(crate) fn try_charge_map_insert(&self, key: &[u8], value: &[u8], maps: usize) -> bool {
+        let entries = key
+            .len()
+            .saturating_mul(3)
+            .saturating_add(value.len())
+            .saturating_add(MAP_INSERT_OVERHEAD_BYTES)
+            .saturating_mul(maps);
+        self.try_charge_body_memory(entries)
+    }
+
     /// Estimate dynamic memory retained for request and response body data.
     ///
     /// This includes body buffers, raw body variables, parsed body collections,
     /// and match data. Collection backing capacities are counted, so this is a
-    /// conservative estimate for connector retained-body budgets.
+    /// conservative estimate for the storage the engine owns.
     pub fn body_memory_bytes(&self) -> usize {
         let maps = [
             &self.args,
@@ -1307,7 +1431,10 @@ impl Transaction {
         let rules = Arc::clone(&self.rules);
 
         for rule in rules.iter() {
-            if (phase != RulePhase::Logging && self.interruption.is_some()) || self.is_allowed(phase) {
+            if self.body_budget_exhausted()
+                || (phase != RulePhase::Logging && self.interruption.is_some())
+                || self.is_allowed(phase)
+            {
                 break;
             }
             if !rule.should_evaluate_in_phase(phase, self.config.multiphase_evaluation) {
@@ -1417,15 +1544,23 @@ impl Transaction {
         let Ok(key) = Macro::new(key) else {
             return;
         };
-        let key = key.expand(self).to_ascii_lowercase();
+        // The expansion's credit is held only while its buffer is alive; the
+        // retained TX copy is charged by the budgeted replacement below.
+        let mut key = key.expand_scoped(self);
+        key.make_ascii_lowercase();
         if remove {
             self.tx.remove(&key);
+            // The entry's storage dropped with the removal, so the charge
+            // this action previously took for the key can return.
+            if let Some(prior) = self.set_action_charges.remove(&format!("tx:{key}")) {
+                self.release_body_memory(prior);
+            }
             return;
         }
         let Ok(value) = Macro::new(value) else {
             return;
         };
-        let value = value.expand(self);
+        let value = value.expand_scoped(self);
         let arithmetic = value
             .strip_prefix('+')
             .map(|number| (true, number))
@@ -1442,10 +1577,15 @@ impl Transaction {
             } else {
                 current.saturating_sub(number)
             };
-            self.set_tx_variable(&key, result.to_string());
+            let result = result.to_string();
+            if !self.replace_budgeted_entry(false, &key, result.as_bytes()) {
+                return;
+            }
             return;
         }
-        self.set_tx_variable(&key, value);
+        if !self.replace_budgeted_entry(false, &key, value.as_bytes()) {
+            return;
+        }
     }
 
     /// Set a transaction-scoped `ENV` value without changing the process environment.
@@ -1456,7 +1596,64 @@ impl Transaction {
         let Ok(value) = Macro::new(value) else {
             return;
         };
-        self.env.set(key.trim(), [value.expand(self)]);
+        // As with `setvar`, the expansion credit covers the temporary buffer
+        // and the retained ENV copy is charged by the replacement below.
+        let value = value.expand_scoped(self);
+        if !self.replace_budgeted_entry(true, key.trim(), value.as_bytes()) {
+            return;
+        }
+    }
+
+    /// Replace one `TX` or `ENV` entry through the body budget.
+    ///
+    /// `Map::set` builds the new entry and then drops the one it replaces, so
+    /// the new bytes are admitted before the set runs, the prediction is
+    /// settled against the entry the set actually took, and the charge a
+    /// previous action took for the same key is returned only after the
+    /// replaced storage has dropped. Repeated same-key writes therefore hold
+    /// one live entry's charge, not one per write. Charges are attributed per
+    /// action-written key: storage these actions never charged for — seeded
+    /// values, captures, engine writes, other key spellings — is never
+    /// released, so interleaved writers can only over-reserve. Returns
+    /// `false` when admission refused, leaving the entry unset.
+    fn replace_budgeted_entry(&mut self, env: bool, key: &str, value: &[u8]) -> bool {
+        let slot = format!("{}:{key}", if env { "env" } else { "tx" });
+        let prior = self.set_action_charges.get(&slot).copied().unwrap_or(0);
+        let bound = if env {
+            self.env.set_entry_bound(key, value)
+        } else {
+            self.tx.set_entry_bound(key, value)
+        };
+        if !self.try_charge_body_memory(bound) {
+            return false;
+        }
+        if env {
+            self.env.set(key, [value]);
+        } else {
+            self.tx.set(key, [value]);
+        }
+        // Settle the prediction against the entry the set actually took.
+        let actual = if env {
+            self.env.entry_allocated_bytes(key)
+        } else {
+            self.tx.entry_allocated_bytes(key)
+        };
+        let mut settled = bound;
+        if actual < bound {
+            self.release_body_memory(bound - actual);
+            settled = actual;
+        } else if actual > bound {
+            let shortfall = actual - bound;
+            if self.try_charge_body_memory(shortfall) {
+                settled = actual;
+            }
+            // A refused shortfall leaves the budget exhausted and the stream
+            // fails closed; the prior credit is still returned below.
+        }
+        // The replaced entry dropped inside the set, so its charge can return.
+        self.release_body_memory(prior);
+        self.set_action_charges.insert(slot, settled);
+        true
     }
 
     /// Set the request URI supplied by the connector.
@@ -1608,6 +1805,9 @@ impl Transaction {
     ///
     /// The caller has already checked the argument limit.
     fn insert_post_argument(&mut self, key: &[u8], value: &[u8]) {
+        if !self.try_charge_map_insert(key, value, 2) {
+            return;
+        }
         self.args_post.add_bytes(key, value);
         self.args.add_bytes(key, value);
         self.update_args_combined_size(key, value);
