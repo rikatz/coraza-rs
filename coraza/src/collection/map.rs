@@ -34,7 +34,7 @@ use std::{borrow::Cow, hash::Hash, mem::size_of};
 use indexmap::IndexMap;
 use regex::Regex;
 
-use crate::{transformations::text_of, types::RuleVariable};
+use crate::{transformations::text_of, transaction::MAP_INSERT_OVERHEAD_BYTES, types::RuleVariable};
 
 /// A key-value collection that supports multiple values per key.
 ///
@@ -416,6 +416,60 @@ impl Map {
     pub(crate) fn remove(&mut self, key: &str) {
         let lookup = self.lookup_key(key.as_bytes());
         self.data.shift_remove(lookup.as_ref());
+    }
+
+    /// The backing capacity of the value stored at `index` under `key`, or
+    /// `None` when there is no such slot.
+    ///
+    /// Replacements rewrite values in their buffers, so the capacity, not the
+    /// value length, is what stays retained; admission for rewritten slots
+    /// tracks this capacity. An empty value has a slot with zero capacity,
+    /// which is distinct from no slot.
+    pub(crate) fn value_capacity(&self, key: impl AsRef<[u8]>, index: usize) -> Option<usize> {
+        let lookup = self.lookup_key(key.as_ref());
+        self.data
+            .get(lookup.as_ref())
+            .and_then(|values| values.get(index))
+            .map(|entry| entry.value.capacity())
+    }
+
+    /// Bytes a `set(key, [value])` allocates for the entry, admitted before
+    /// the set runs.
+    ///
+    /// Mirrors [`Map::entry_allocated_bytes`]: one `KeyValue` in the value
+    /// vector, the stored key strings and the value's exact copy. A first
+    /// insert also takes the map key and index entry that the map-insert
+    /// overhead covers.
+    pub(crate) fn set_entry_bound(&self, key: impl AsRef<[u8]>, value: &[u8]) -> usize {
+        let key = key.as_ref();
+        let lookup = self.lookup_key(key);
+        let present = self.data.contains_key(lookup.as_ref());
+        size_of::<KeyValue>()
+            .saturating_add(key.len().saturating_mul(3))
+            .saturating_add(value.len())
+            .saturating_add(usize::from(!present).saturating_mul(MAP_INSERT_OVERHEAD_BYTES))
+    }
+
+    /// Estimated bytes `key`'s entry holds: its value vector and each stored
+    /// key and value capacity. Zero when the key is absent.
+    ///
+    /// A `set` replaces the whole entry — the value vector is rebuilt and the
+    /// replaced one dropped — so this is what a replacement's charge settles
+    /// against, unlike [`Map::value_capacity`] for in-buffer rewrites.
+    pub(crate) fn entry_allocated_bytes(&self, key: impl AsRef<[u8]>) -> usize {
+        let lookup = self.lookup_key(key.as_ref());
+        match self.data.get(lookup.as_ref()) {
+            Some(values) => {
+                let mut total = values.capacity().saturating_mul(size_of::<KeyValue>());
+                for entry in values {
+                    total = total
+                        .saturating_add(entry.key.allocated_bytes())
+                        .saturating_add(entry.value.capacity());
+                }
+                total
+            },
+            None => 0,
+        }
     }
 
     /// Removes every key.

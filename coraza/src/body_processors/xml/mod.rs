@@ -23,7 +23,9 @@
 mod decoder;
 mod tables;
 
-use decoder::{Decoder, Token};
+use std::mem::size_of;
+
+use decoder::{Decoder, Open, Token};
 
 /// XML attributes and text exposed by `REQUEST_XML`.
 #[derive(Debug, Default)]
@@ -32,6 +34,22 @@ pub(crate) struct Document {
     pub(crate) attribute_values: Vec<String>,
     /// Non-empty text segments, trimmed and in document order.
     pub(crate) text: Vec<String>,
+}
+
+/// Upper bound on parser-owned allocations before parsing starts.
+///
+/// Every element, attribute, and text segment produces at most one value;
+/// `values` counts `<` and `=` as upper bounds for those. String payloads are
+/// input copies and the two `Vec` capacities can each double.
+pub(crate) fn allocation_bound(body: &[u8]) -> usize {
+    let starts = body.iter().filter(|byte| **byte == b'<').count();
+    let equals = body.iter().filter(|byte| **byte == b'=').count();
+    let values = starts.saturating_add(equals).saturating_add(1);
+    let elements = starts.saturating_add(1);
+    body.len()
+        .saturating_mul(2)
+        .saturating_add(values.saturating_mul(size_of::<String>()).saturating_mul(4))
+        .saturating_add(elements.saturating_mul(size_of::<Open>()).saturating_mul(2))
 }
 
 /// Parse a request body, accepting truncated documents as partial input.

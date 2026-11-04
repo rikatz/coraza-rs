@@ -23,14 +23,11 @@ use std::{
     cell::{Cell, RefCell},
     net::{IpAddr, SocketAddr},
     str,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::{Arc, LazyLock},
 };
 
 use coraza::{
-    transaction::{Interruption, Transaction},
+    transaction::{BodyBudget, Interruption, RetainedBodyBudget, Transaction},
     types::RuleEngineStatus,
 };
 use envoy_coraza_common::{
@@ -63,7 +60,8 @@ const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 /// Aggregate retained body bytes shared by the loaded native module.
 const MAX_RETAINED_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Process-wide for this loaded module, across filter configs, generations and workers.
-static RETAINED_BODY_BYTES: AtomicUsize = AtomicUsize::new(0);
+static RETAINED_BODY_BUDGET: LazyLock<Arc<RetainedBodyBudget>> =
+    LazyLock::new(|| Arc::new(RetainedBodyBudget::new(MAX_RETAINED_BODY_BYTES)));
 const EMPTY_BODY: &[u8] = b"";
 const REQUEST_DENY_BODY: &[u8] = b"Request denied\n";
 const REQUEST_ERROR_BODY: &[u8] = b"Request inspection unavailable\n";
@@ -161,7 +159,7 @@ impl StreamState {
             response_body_truncated: false,
             telemetry_publish_failed: false,
             outcome: None,
-            reservation: BodyReservation::default(),
+            reservation: BodyReservation::new(Arc::clone(&RETAINED_BODY_BUDGET)),
         }
     }
 
@@ -183,7 +181,7 @@ impl StreamState {
             .as_deref_mut()
             .is_some_and(|transaction| transaction.finish().is_err());
         self.transaction.take();
-        let _ = self.reservation.resize(0);
+        self.reservation.clear();
         Some((outcome, failed))
     }
 }
@@ -195,9 +193,13 @@ impl Drop for StreamState {
 }
 
 /// Per-stream body admission reservation; releasing it is independent of callbacks.
-#[derive(Default)]
 struct BodyReservation {
-    bytes: usize,
+    /// Shared counter also used by the engine's transaction budget.
+    budget: Arc<RetainedBodyBudget>,
+    /// Request-side host/scratch bytes held until stream completion.
+    request: usize,
+    /// Response-side host/scratch bytes held until stream completion.
+    response: usize,
 }
 
 struct RequestMetadata {
@@ -207,40 +209,51 @@ struct RequestMetadata {
 }
 
 impl BodyReservation {
-    fn resize(&mut self, target: usize) -> bool {
-        if target > self.bytes {
-            let additional = target.saturating_sub(self.bytes);
-            if !try_reserve(&RETAINED_BODY_BYTES, additional, MAX_RETAINED_BODY_BYTES) {
+    fn new(budget: Arc<RetainedBodyBudget>) -> Self {
+        Self {
+            budget,
+            request: 0,
+            response: 0,
+        }
+    }
+
+    fn resize_request(&mut self, target: usize) -> bool {
+        Self::resize(&self.budget, &mut self.request, target)
+    }
+
+    fn resize_response(&mut self, target: usize) -> bool {
+        Self::resize(&self.budget, &mut self.response, target)
+    }
+
+    fn resize(budget: &RetainedBodyBudget, held: &mut usize, target: usize) -> bool {
+        if target > *held {
+            let additional = target.saturating_sub(*held);
+            if !budget.try_reserve(additional) {
                 return false;
             }
         } else {
-            RETAINED_BODY_BYTES.fetch_sub(self.bytes.saturating_sub(target), Ordering::AcqRel);
+            let released = budget.release(held.saturating_sub(target));
+            debug_assert!(released, "body reservation released more than it held");
         }
-        self.bytes = target;
+        *held = target;
         true
+    }
+
+    /// Bytes currently held across both directions.
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        self.request.saturating_add(self.response)
+    }
+
+    fn clear(&mut self) {
+        self.resize_request(0);
+        self.resize_response(0);
     }
 }
 
 impl Drop for BodyReservation {
     fn drop(&mut self) {
-        RETAINED_BODY_BYTES.fetch_sub(self.bytes, Ordering::AcqRel);
-    }
-}
-
-/// Atomically reserves bytes without a load-then-add race.
-fn try_reserve(counter: &AtomicUsize, additional: usize, limit: usize) -> bool {
-    let mut current = counter.load(Ordering::Acquire);
-    loop {
-        let Some(next) = current.checked_add(additional) else {
-            return false;
-        };
-        if next > limit {
-            return false;
-        }
-        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return true,
-            Err(actual) => current = actual,
-        }
+        self.clear();
     }
 }
 
@@ -544,6 +557,9 @@ impl RequestFilter {
         let (transaction, interruption) = create_transaction(envoy, policy, authority_text, &headers, &metadata);
         state.body_access = transaction.request_body_access();
         state.transaction = Some(transaction);
+        if request_budget_exhausted(state) {
+            return Err(Reply::retained_body_budget_exhausted("request-headers"));
+        }
         if let Some(interruption) = interruption {
             return Err(Reply::Interruption(interruption));
         }
@@ -577,8 +593,7 @@ impl RequestFilter {
         state.phase2_done = true;
         state.stage = Stage::Complete;
         let result = phase2(state, EMPTY_BODY);
-        let retained = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
-        if !state.reservation.resize(retained) {
+        if request_budget_exhausted(state) {
             return Err(Reply::retained_body_budget_exhausted("request-body"));
         }
         result.map(|()| HeadersAction::Continue)
@@ -614,23 +629,27 @@ impl RequestFilter {
         if body_size > MAX_REQUEST_BODY_BYTES {
             return Err(Reply::body_too_large("request-body"));
         }
-        if !state.reservation.resize(body_size) {
+        if !end_of_stream {
+            if !state.reservation.resize_request(body_size) {
+                return Err(Reply::retained_body_budget_exhausted("request-body"));
+            }
+            state.body_bytes = body_size;
+            return Ok(BodyAction::Buffer);
+        }
+        // Envoy's buffered copy and the module's contiguous copy are both live
+        // before the engine sees the body. Engine-owned storage is charged by
+        // the transaction budget, against the same shared counter.
+        let target = body_size
+            .checked_mul(2)
+            .ok_or_else(|| Reply::retained_body_budget_exhausted("request-body"))?;
+        if !state.reservation.resize_request(target) {
             return Err(Reply::retained_body_budget_exhausted("request-body"));
         }
         state.body_bytes = body_size;
-        if !end_of_stream {
-            return Ok(BodyAction::Buffer);
-        }
-        let prior_engine_bytes = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
-        let scratch_and_engine = body_size
-            .checked_mul(2)
-            .and_then(|size| size.checked_add(prior_engine_bytes));
-        let target = scratch_and_engine.and_then(|size| body_size.checked_add(size));
-        if !target.is_some_and(|target| state.reservation.resize(target)) {
-            return Err(Reply::retained_body_budget_exhausted("request-body-inspection"));
-        }
-        let body = copy_terminal_body(envoy, received_buffered, body_size, false)
-            .ok_or_else(|| Reply::incomplete(503, "request-body-buffer"))?;
+        let Some(body) = copy_terminal_body(envoy, received_buffered, body_size, false) else {
+            state.reservation.resize_request(body_size);
+            return Err(Reply::incomplete(503, "request-body-buffer"));
+        };
         drop(slot);
         let mut slot = self
             .state
@@ -643,9 +662,9 @@ impl RequestFilter {
         state.stage = Stage::Complete;
         let result = phase2(state, &body);
         drop(body);
-        let retained = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
-        let host_and_engine = state.body_bytes.checked_add(retained);
-        if !host_and_engine.is_some_and(|target| state.reservation.resize(target)) {
+        // The module copy is gone; only Envoy's buffered copy remains.
+        state.reservation.resize_request(body_size);
+        if request_budget_exhausted(state) {
             return Err(Reply::retained_body_budget_exhausted("request-body"));
         }
         result.map(|()| BodyAction::Continue)
@@ -680,26 +699,22 @@ impl RequestFilter {
         if body_size > MAX_REQUEST_BODY_BYTES {
             return Err(Reply::body_too_large("request-body"));
         }
-        if !state.reservation.resize(body_size) {
-            return Err(Reply::retained_body_budget_exhausted("request-body"));
-        }
-        let prior_engine_bytes = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
         let target = body_size
             .checked_mul(2)
-            .and_then(|size| size.checked_add(prior_engine_bytes))
-            .and_then(|size| body_size.checked_add(size));
-        if !target.is_some_and(|target| state.reservation.resize(target)) {
-            return Err(Reply::retained_body_budget_exhausted("request-body-inspection"));
+            .ok_or_else(|| Reply::retained_body_budget_exhausted("request-body"))?;
+        if !state.reservation.resize_request(target) {
+            return Err(Reply::retained_body_budget_exhausted("request-body"));
         }
-        let body = copy_terminal_body(envoy, false, body_size, true)
-            .ok_or_else(|| Reply::incomplete(503, "request-body-buffer"))?;
+        let Some(body) = copy_terminal_body(envoy, false, body_size, true) else {
+            state.reservation.resize_request(body_size);
+            return Err(Reply::incomplete(503, "request-body-buffer"));
+        };
         state.phase2_done = true;
         state.stage = Stage::Complete;
         let result = phase2(state, &body);
         drop(body);
-        let retained = state.transaction.as_ref().map_or(0, |tx| tx.body_memory_bytes());
-        let host_and_engine = state.body_bytes.max(body_size).checked_add(retained);
-        if !host_and_engine.is_some_and(|target| state.reservation.resize(target)) {
+        state.reservation.resize_request(body_size);
+        if request_budget_exhausted(state) {
             return Err(Reply::retained_body_budget_exhausted("request-body"));
         }
         state.body_bytes = body_size;
@@ -755,6 +770,9 @@ impl RequestFilter {
             .transaction
             .as_mut()
             .and_then(|transaction| transaction.process_response_headers(status, &state.protocol));
+        if response_budget_exhausted(state) {
+            return Err(Self::response_failure(state, 502, "response-body-admission"));
+        }
         if let Some(interruption) = interruption {
             return Err(ResponseReply::interruption(
                 state,
@@ -777,6 +795,9 @@ impl RequestFilter {
                 .transaction
                 .as_mut()
                 .and_then(|transaction| transaction.process_response_body(EMPTY_BODY));
+            if response_budget_exhausted(state) {
+                return Err(Self::response_failure(state, 502, "response-body-admission"));
+            }
             if let Some(interruption) = interruption {
                 return Err(ResponseReply::interruption(
                     state,
@@ -838,25 +859,39 @@ impl RequestFilter {
             if body_size > MAX_RESPONSE_BODY_BYTES {
                 return Err(Self::response_failure(state, 502, "response-body-limit"));
             }
-            if !Self::reserve_response_body(state, body_size, end_of_stream) {
+            if !end_of_stream {
+                if !state.reservation.resize_response(body_size) {
+                    return Err(Self::response_failure(state, 502, "response-body-admission"));
+                }
+                state.response_body_bytes = body_size;
+                state.response_stage = ResponseStage::Body;
+                return Ok(Some(ResponseBodyStatus::StopIterationAndBuffer));
+            }
+            // Envoy's buffered copy and the module's contiguous copy are both live
+            // before the engine sees the body. Engine-owned storage is charged by
+            // the transaction budget, against the same shared counter.
+            let target = body_size
+                .checked_mul(2)
+                .ok_or_else(|| Self::response_failure(state, 502, "response-body-admission"))?;
+            if !state.reservation.resize_response(target) {
                 return Err(Self::response_failure(state, 502, "response-body-admission"));
             }
             state.response_body_bytes = body_size;
-            state.response_stage = if end_of_stream {
-                ResponseStage::Complete
-            } else {
-                ResponseStage::Body
+            state.response_stage = ResponseStage::Complete;
+            let Some(body) = copy_terminal_response_body(envoy, received_buffered, body_size, false) else {
+                state.reservation.resize_response(body_size);
+                return Err(Self::response_failure(state, 502, "response-body-buffer"));
             };
-            if !end_of_stream {
-                return Ok(Some(ResponseBodyStatus::StopIterationAndBuffer));
-            }
-            let body = copy_terminal_response_body(envoy, received_buffered, body_size, false)
-                .ok_or_else(|| Self::response_failure(state, 502, "response-body-buffer"))?;
             let interruption = state
                 .transaction
                 .as_mut()
                 .and_then(|transaction| transaction.process_response_body(&body));
             drop(body);
+            // The module copy is gone; only Envoy's buffered copy remains.
+            state.reservation.resize_response(body_size);
+            if response_budget_exhausted(state) {
+                return Err(Self::response_failure(state, 502, "response-body-admission"));
+            }
             if let Some(interruption) = interruption {
                 return Err(ResponseReply::interruption(
                     state,
@@ -870,14 +905,6 @@ impl RequestFilter {
                 .is_some_and(|transaction| transaction.response_body_stats().truncated);
             if state.response_body_truncated {
                 state.outcome = Some(TerminalOutcome::BodyPartiallyInspected { phase: "response-body" });
-            }
-            let retained = state
-                .transaction
-                .as_ref()
-                .map_or(0, |transaction| transaction.body_memory_bytes());
-            let target = state.body_bytes.checked_add(retained);
-            if !target.is_some_and(|target| state.reservation.resize(target)) {
-                return Err(Self::response_failure(state, 502, "response-body-retention"));
             }
             Ok(Some(ResponseBodyStatus::Continue))
         })();
@@ -925,17 +952,26 @@ impl RequestFilter {
             if body_size > MAX_RESPONSE_BODY_BYTES {
                 return Err(Self::response_failure(state, 502, "response-body-limit"));
             }
-            if !Self::reserve_response_body(state, body_size, true) {
+            let target = body_size
+                .checked_mul(2)
+                .ok_or_else(|| Self::response_failure(state, 502, "response-body-admission"))?;
+            if !state.reservation.resize_response(target) {
                 return Err(Self::response_failure(state, 502, "response-body-admission"));
             }
-            let body = copy_terminal_response_body(envoy, false, body_size, true)
-                .ok_or_else(|| Self::response_failure(state, 502, "response-body-buffer"))?;
+            let Some(body) = copy_terminal_response_body(envoy, false, body_size, true) else {
+                state.reservation.resize_response(body_size);
+                return Err(Self::response_failure(state, 502, "response-body-buffer"));
+            };
             state.response_stage = ResponseStage::Complete;
             let interruption = state
                 .transaction
                 .as_mut()
                 .and_then(|transaction| transaction.process_response_body(&body));
             drop(body);
+            state.reservation.resize_response(body_size);
+            if response_budget_exhausted(state) {
+                return Err(Self::response_failure(state, 502, "response-body-admission"));
+            }
             if let Some(interruption) = interruption {
                 return Err(ResponseReply::interruption(
                     state,
@@ -949,14 +985,6 @@ impl RequestFilter {
                 .is_some_and(|transaction| transaction.response_body_stats().truncated);
             if state.response_body_truncated {
                 state.outcome = Some(TerminalOutcome::BodyPartiallyInspected { phase: "response-body" });
-            }
-            let retained = state
-                .transaction
-                .as_ref()
-                .map_or(0, |transaction| transaction.body_memory_bytes());
-            let target = state.body_bytes.checked_add(retained);
-            if !target.is_some_and(|target| state.reservation.resize(target)) {
-                return Err(Self::response_failure(state, 502, "response-body-retention"));
             }
             state.response_body_bytes = body_size;
             Ok(())
@@ -989,21 +1017,6 @@ impl RequestFilter {
             _ => TerminalOutcome::Incomplete { phase, status },
         });
         ResponseReply::failure(status, phase, state.method.eq_ignore_ascii_case("HEAD"))
-    }
-
-    fn reserve_response_body(state: &mut StreamState, body_size: usize, copying: bool) -> bool {
-        let retained = state
-            .transaction
-            .as_ref()
-            .map_or(0, |transaction| transaction.body_memory_bytes());
-        let held = if copying {
-            body_size.checked_mul(2)
-        } else {
-            Some(body_size)
-        };
-        held.and_then(|held| state.body_bytes.checked_add(held))
-            .and_then(|held| retained.checked_add(held))
-            .is_some_and(|target| state.reservation.resize(target))
     }
 
     fn send_response_reply(&self, envoy: &mut impl EnvoyHttpFilter, reply: &ResponseReply) {
@@ -1204,6 +1217,19 @@ fn terminal_outcome(state: &StreamState) -> TerminalOutcome {
     }
 }
 
+/// Whether the transaction failed an engine body-accounting charge.
+fn request_budget_exhausted(state: &StreamState) -> bool {
+    state
+        .transaction
+        .as_ref()
+        .is_some_and(|transaction| transaction.body_budget_exhausted())
+}
+
+/// Whether the transaction failed an engine body-accounting charge.
+fn response_budget_exhausted(state: &StreamState) -> bool {
+    request_budget_exhausted(state)
+}
+
 fn phase2(state: &mut StreamState, body: &[u8]) -> Result<(), Reply> {
     let Some(transaction) = state.transaction.as_mut() else {
         return Err(Reply::invalid_lifecycle(503, "request-transaction-missing"));
@@ -1239,6 +1265,7 @@ fn create_transaction<EHF: EnvoyHttpFilter>(
     metadata: &RequestMetadata,
 ) -> (Box<Transaction>, Option<Interruption>) {
     let mut transaction = Box::new(policy.waf.new_transaction());
+    transaction.set_body_budget(BodyBudget::new(Arc::clone(&RETAINED_BODY_BUDGET)));
     apply_connection_metadata(envoy, &mut transaction, authority);
     transaction.process_uri(&metadata.uri, &metadata.method, &metadata.protocol);
     for (name, value) in headers {
@@ -1403,6 +1430,7 @@ fn copy_terminal_response_body<EHF: EnvoyHttpFilter>(
 mod tests {
     use std::{
         cell::{Cell, RefCell},
+        fmt::Write as _,
         rc::Rc,
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -1410,7 +1438,10 @@ mod tests {
         },
     };
 
-    use coraza::transaction::Interruption;
+    use coraza::{
+        seclang::Parser,
+        transaction::{BodyBudget, Interruption, RetainedBodyBudget, Transaction},
+    };
     use envoy_coraza_common::{
         config::Config,
         observability::{Diagnostics, TerminalOutcome},
@@ -1431,8 +1462,8 @@ mod tests {
     };
 
     use super::{
-        terminal_outcome, try_reserve, BodyReservation, FilterConfig, InterruptionPhase, ResponseReply, ResponseStage,
-        Stage, StreamState, MAX_HEADER_VALUE_BYTES, RETAINED_BODY_BYTES,
+        terminal_outcome, BodyReservation, FilterConfig, InterruptionPhase, ResponseReply, ResponseStage, Stage,
+        StreamState, MAX_HEADER_VALUE_BYTES,
     };
 
     fn generation(directive: &str) -> Arc<Generation> {
@@ -1604,33 +1635,287 @@ mod tests {
 
     #[test]
     fn admission_reservation_is_checked_and_released_on_drop() {
-        let counter = AtomicUsize::new(0);
-        assert!(try_reserve(&counter, 7, 10));
-        assert!(!try_reserve(&counter, 4, 10));
-        assert_eq!(counter.load(Ordering::Acquire), 7);
-        assert!(!try_reserve(&counter, usize::MAX, 10));
-
-        let initial = RETAINED_BODY_BYTES.load(Ordering::Acquire);
-        let mut reservation = BodyReservation::default();
-        assert!(reservation.resize(17));
-        assert_eq!(RETAINED_BODY_BYTES.load(Ordering::Acquire), initial + 17);
+        let counter = Arc::new(RetainedBodyBudget::new(10));
+        let mut reservation = BodyReservation::new(Arc::clone(&counter));
+        assert!(reservation.resize_request(7));
+        assert_eq!(counter.used(), 7);
+        assert!(!reservation.resize_request(11));
+        assert_eq!(counter.used(), 7);
+        assert!(!reservation.resize_request(usize::MAX));
+        assert!(reservation.resize_request(3));
+        assert_eq!(counter.used(), 3);
         drop(reservation);
-        assert_eq!(RETAINED_BODY_BYTES.load(Ordering::Acquire), initial);
+        assert_eq!(counter.used(), 0);
     }
 
     #[test]
     fn concurrent_reservations_never_cross_the_shared_limit() {
-        let counter = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::new(RetainedBodyBudget::new(10));
         let mut workers = Vec::new();
         for _ in 0..8 {
             let counter = Arc::clone(&counter);
             workers.push(std::thread::spawn(move || {
-                (0..100).filter(|_| try_reserve(&counter, 1, 10)).count()
+                (0..100).filter(|_| counter.try_reserve(1)).count()
             }));
         }
         let reserved: usize = workers.into_iter().map(|worker| worker.join().unwrap()).sum();
         assert_eq!(reserved, 10);
-        assert_eq!(counter.load(Ordering::Acquire), 10);
+        assert_eq!(counter.used(), 10);
+    }
+
+    fn budgeted_transaction(
+        generation: &Arc<Generation>,
+        shared: Arc<RetainedBodyBudget>,
+        method: &str,
+        uri: &str,
+    ) -> Box<Transaction> {
+        let policy = generation.select("example.test").unwrap();
+        let mut transaction = Box::new(policy.waf.new_transaction());
+        transaction.set_body_budget(BodyBudget::new(shared));
+        transaction.process_uri(uri, method, "HTTP/2");
+        transaction.process_request_headers();
+        transaction
+    }
+
+    fn assert_parser_accounting(processor: &str, body: &[u8]) {
+        const MIB: usize = 1024 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(8 * MIB));
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser
+            .from_string(&format!(
+                "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 1048576\nSecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor={processor}\""
+            ))
+            .unwrap();
+        let waf = parser.compile().unwrap();
+        let mut transaction = waf.new_transaction();
+        transaction.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        transaction.process_uri("/", "POST", "HTTP/2");
+        transaction.process_request_headers();
+
+        assert!(transaction.process_request_body(body).is_none());
+        assert!(!transaction.body_budget_exhausted());
+        assert!(
+            transaction.body_memory_bytes() <= shared.used(),
+            "{processor} retained more engine storage than it admitted"
+        );
+    }
+
+    #[test]
+    fn json_flattening_admits_its_full_collection_growth() {
+        let fields: Vec<_> = (0..500).map(|index| format!("\"k{index}\":0")).collect();
+        assert_parser_accounting("JSON", format!("{{{}}}", fields.join(",")).as_bytes());
+    }
+
+    #[test]
+    fn xml_collection_admits_its_full_growth() {
+        assert_parser_accounting("XML", format!("<root>{}</root>", "<a>x</a>".repeat(1000)).as_bytes());
+    }
+
+    #[test]
+    fn pressure_followup_fits_after_scratch_reconciliation() {
+        const MIB: usize = 1024 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(64 * MIB));
+        assert!(shared.try_reserve(39 * MIB));
+        let body = vec![b'x'; 4 * MIB];
+        assert!(shared.try_reserve(2 * body.len()));
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser
+            .from_string(
+                "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"\nSecRule REQUEST_BODY \"@contains body-attack\" \"id:3,phase:2,deny,status:429\"",
+            )
+            .unwrap();
+        let waf = parser.compile().unwrap();
+        let mut transaction = waf.new_transaction();
+        transaction.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        transaction.process_uri("/echo", "POST", "HTTP/2");
+        transaction.process_request_headers();
+
+        assert!(!transaction.body_budget_exhausted());
+        assert!(transaction.process_request_body(&body).is_none());
+        assert!(!transaction.body_budget_exhausted());
+    }
+
+    #[test]
+    fn macro_expanded_tx_values_are_admitted_before_allocation() {
+        const BODY: usize = 32 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(8 * 1024 * 1024));
+        let mut directives = String::from(
+            "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 1048576\nSecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor=RAW\"\n",
+        );
+        for id in 2..12 {
+            writeln!(
+                directives,
+                "SecRule &REQUEST_BODY \"@eq 1\" \"id:{id},phase:2,pass,nolog,setvar:tx.saved{id}=%{{REQUEST_BODY}}\""
+            )
+            .unwrap();
+        }
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser.from_string(&directives).unwrap();
+        let waf = parser.compile().unwrap();
+        let mut transaction = waf.new_transaction();
+        transaction.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        transaction.process_uri("/", "POST", "HTTP/2");
+        transaction.process_request_headers();
+
+        assert!(transaction.process_request_body(&vec![b'x'; BODY]).is_none());
+        assert!(!transaction.body_budget_exhausted());
+        assert!(transaction.body_memory_bytes() <= shared.used());
+    }
+
+    #[test]
+    fn expanding_transformation_is_bounded_before_it_allocates() {
+        const BODY: usize = 128 * 1024;
+        let generation = generation(
+            "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"\nSecRule REQUEST_BODY \"@contains never\" \"id:2,phase:2,deny,status:429,t:urlEncode\"",
+        );
+        let body = vec![b'\xff'; BODY];
+
+        let tight = Arc::new(RetainedBodyBudget::new(6 * BODY));
+        let mut transaction = budgeted_transaction(&generation, Arc::clone(&tight), "POST", "/transform");
+        assert!(transaction.process_request_body(&body).is_some());
+        assert!(transaction.body_budget_exhausted());
+
+        let enough = Arc::new(RetainedBodyBudget::new(8 * BODY));
+        let mut transaction = budgeted_transaction(&generation, Arc::clone(&enough), "POST", "/transform");
+        assert!(transaction.process_request_body(&body).is_none());
+        assert!(!transaction.body_budget_exhausted());
+    }
+
+    #[test]
+    fn near_cap_response_accounts_host_scratch_and_engine_storage() {
+        const MIB: usize = 1024 * 1024;
+        const BODY: usize = 768 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(64 * MIB));
+        let mut other_streams = BodyReservation::new(Arc::clone(&shared));
+        assert!(
+            other_streams.resize_request(62 * MIB),
+            "other streams hold their controlled bytes"
+        );
+
+        let generation = generation(
+            "SecRuleEngine On\nSecResponseBodyAccess On\nSecResponseBodyLimit 1048576\nSecResponseBodyMimeType text/plain",
+        );
+        let mut transaction = budgeted_transaction(&generation, Arc::clone(&shared), "GET", "/near-cap");
+        assert!(transaction.process_request_body(b"").is_none());
+        transaction.add_response_header("content-type", "text/plain");
+        assert!(transaction.process_response_headers(200, "HTTP/2").is_none());
+
+        let body = vec![b'x'; BODY];
+        let mut stream = BodyReservation::new(Arc::clone(&shared));
+        assert!(
+            stream.resize_response(2 * BODY),
+            "host and module copies fit before the engine retains its own storage"
+        );
+        assert!(
+            transaction.process_response_body(&body).is_some(),
+            "engine body storage pushes 62 MiB plus 768 KiB past the 64 MiB admission bound"
+        );
+        assert!(transaction.body_budget_exhausted());
+
+        drop(transaction);
+        drop(stream);
+        assert_eq!(shared.used(), 62 * MIB);
+        drop(other_streams);
+        assert_eq!(shared.used(), 0);
+    }
+
+    #[test]
+    fn raw_request_budget_charges_body_buffer_and_retained_variable() {
+        const BODY: usize = 128 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(2 * BODY - 1));
+        let generation = generation(
+            "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"",
+        );
+        let mut transaction = budgeted_transaction(&generation, Arc::clone(&shared), "POST", "/raw");
+        let body = vec![b'x'; BODY];
+
+        assert!(transaction.process_request_body(&body).is_some());
+        assert!(
+            transaction.body_budget_exhausted(),
+            "the body buffer and REQUEST_BODY copy both need admission"
+        );
+        drop(transaction);
+        assert_eq!(shared.used(), 0);
+    }
+
+    #[test]
+    fn response_match_storage_is_charged_before_it_is_retained() {
+        const BODY: usize = 128 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(5 * BODY));
+        let generation = generation(
+            "SecRuleEngine On\nSecResponseBodyAccess On\nSecResponseBodyLimit 1048576\nSecResponseBodyMimeType text/plain\nSecRule RESPONSE_BODY \"@contains secret\" \"id:2,phase:4,pass,nolog\"",
+        );
+        let mut transaction = budgeted_transaction(&generation, Arc::clone(&shared), "GET", "/match");
+        assert!(transaction.process_request_body(b"").is_none());
+        transaction.add_response_header("content-type", "text/plain");
+        assert!(transaction.process_response_headers(200, "HTTP/2").is_none());
+        let mut body = vec![b'x'; BODY];
+        body.get_mut(..6).unwrap().copy_from_slice(b"secret");
+
+        assert!(transaction.process_response_body(&body).is_some());
+        assert!(
+            transaction.body_budget_exhausted(),
+            "matched values and matched-rule storage are charged as body-derived memory"
+        );
+        drop(transaction);
+        assert_eq!(shared.used(), 0);
+    }
+
+    #[test]
+    fn request_trailer_eos_fails_closed_when_host_and_engine_charges_do_not_fit() {
+        let generation = body_rule_generation();
+        let shared = Arc::new(RetainedBodyBudget::new(15));
+        let policy = generation.select("example.test").unwrap();
+        let mut transaction = Box::new(policy.waf.new_transaction());
+        transaction.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        transaction.process_uri("/upload", "POST", "HTTP/2");
+        transaction.process_request_headers();
+
+        let filter = Rc::new(FilterConfig::new(Arc::clone(&generation)).new_stream());
+        let mut state = StreamState::new(Arc::clone(&generation));
+        state.stage = Stage::Held;
+        state.transaction = Some(transaction);
+        state.reservation = BodyReservation::new(Arc::clone(&shared));
+        *filter.state.borrow_mut() = Some(state);
+
+        let mut envoy = MockEnvoyHttpFilter::default();
+        envoy
+            .expect_get_request_trailers()
+            .returning(|| vec![(EnvoyBuffer::new(b"x-trailer"), EnvoyBuffer::new(b"value"))]);
+        envoy.expect_get_buffered_request_body_size().return_const(6_usize);
+        let attack = attack_view();
+        envoy
+            .expect_get_buffered_request_body()
+            .returning_st(move || Some(vec![attack]));
+        envoy
+            .expect_send_response()
+            .returning_st(|status, _, _, _| assert_eq!(status, 503));
+
+        assert_eq!(
+            filter.on_request_trailers(&mut envoy),
+            RequestTrailersStatus::StopIteration,
+        );
+        drop(filter);
+        assert_eq!(shared.used(), 0);
+    }
+
+    #[test]
+    fn detection_only_budget_failure_stays_observable_without_an_interruption() {
+        const BODY: usize = 128 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(2 * BODY - 1));
+        let generation = generation(
+            "SecRuleEngine DetectionOnly\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,ctl:requestBodyProcessor=RAW,pass\"",
+        );
+        let mut transaction = budgeted_transaction(&generation, Arc::clone(&shared), "POST", "/detection");
+        let body = vec![b'x'; BODY];
+
+        assert!(transaction.process_request_body(&body).is_none());
+        assert!(transaction.body_budget_exhausted());
+        drop(transaction);
+        assert_eq!(shared.used(), 0);
     }
 
     #[test]
@@ -2488,7 +2773,7 @@ mod tests {
         state.stage = Stage::Complete;
         state.response_stage = ResponseStage::Complete;
         state.transaction = Some(Box::new(policy.waf.new_transaction()));
-        assert!(state.reservation.resize(19));
+        assert!(state.reservation.resize_request(19));
         *filter.state.borrow_mut() = Some(state);
 
         let keys = Rc::new(RefCell::new(Vec::new()));
@@ -2506,7 +2791,8 @@ mod tests {
                 assert!(state.finalized, "health state is set after transaction finalization");
                 assert!(state.transaction.is_none());
                 assert_eq!(
-                    state.reservation.bytes, 0,
+                    state.reservation.bytes(),
+                    0,
                     "retained memory is released before access-log state"
                 );
                 expected_keys.borrow_mut().push((key, value));

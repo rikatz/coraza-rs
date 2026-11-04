@@ -24,10 +24,11 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     io::Write as _,
+    mem::size_of,
     path::{Path, PathBuf},
 };
 
-use super::{Interruption, Transaction, body_buffer::BodyBuffer, variables::BodyProcessor};
+use super::{BodyBudget, Interruption, Transaction, body_buffer::BodyBuffer, variables::BodyProcessor};
 use crate::{
     body_processors::{
         BodyDirection, BodyProcessor as CustomBodyProcessor, BodyProcessorFactory, BodyProcessorFile,
@@ -36,6 +37,9 @@ use crate::{
     transformations::url_decode,
     types::{BodyLimitAction, RulePhase},
 };
+
+/// Per-entry bound for one flattened JSON argument row and its value vector.
+const JSON_ARGUMENT_ENTRY_BYTES: usize = 512;
 
 #[expect(
     clippy::multiple_inherent_impl,
@@ -87,7 +91,8 @@ impl Transaction {
                     }
                 }
             }
-            if self.request_body_buffer.accept(body).is_err() {
+            let budget = self.body_budget.as_ref();
+            if self.request_body_buffer.accept(body, budget).is_err() {
                 ingest_error = true;
             }
         }
@@ -138,7 +143,19 @@ impl Transaction {
             }
         }
 
+        if self.body_budget_exhausted() {
+            self.inbound_data_error.set("1");
+            self.interrupt(0, "deny", 500, "");
+            if self.interruption.is_some() {
+                return self.interruption.clone();
+            }
+        }
+
         self.run_phase(RulePhase::RequestBody);
+        if self.body_budget_exhausted() {
+            self.inbound_data_error.set("1");
+            self.interrupt(0, "deny", 500, "");
+        }
         self.interruption.clone()
     }
 
@@ -157,10 +174,16 @@ impl Transaction {
 
         match processor {
             BodyProcessor::Raw => {
+                if !self.try_charge_body_memory(body.len()) {
+                    return;
+                }
                 self.request_body.set(body);
                 self.request_body_length.set(body.len().to_string());
             },
             BodyProcessor::UrlEncoded => {
+                if !self.try_charge_body_memory(body.len()) {
+                    return;
+                }
                 self.request_body.set(body);
                 self.request_body_length.set(body.len().to_string());
                 // Check each raw pair against the limit before decoding it, so pairs past
@@ -170,8 +193,15 @@ impl Transaction {
                     if !self.within_argument_limit(count) {
                         break;
                     }
+                    let decode_bytes = key.len().saturating_add(value.len());
+                    if !self.try_charge_body_memory(decode_bytes) {
+                        break;
+                    }
                     let (key, value) = decode_pair(key, value);
                     self.insert_post_argument(&key, &value);
+                    drop(key);
+                    drop(value);
+                    self.release_body_memory(decode_bytes);
                     count = count.saturating_add(1);
                 }
             },
@@ -187,16 +217,24 @@ impl Transaction {
             BodyProcessor::Json => {
                 // Arguments are published before the error is checked so a valid
                 // prefix stays inspectable; see Go Coraza `json.go:34-62`.
-                let parsed = read_json_body(
+                let JsonBody {
+                    arguments,
+                    truncated,
+                    error,
+                    charged,
+                } = read_json_body(
                     body,
                     self.config.request_body_json_depth_limit,
                     self.config.argument_limit,
+                    self.body_budget.as_ref(),
                 );
-                publish_json_arguments(self, &parsed.arguments, false);
-                if parsed.truncated {
+                publish_json_arguments(self, &arguments, false);
+                drop(arguments);
+                self.release_body_memory(charged);
+                if truncated {
                     self.arguments_limit_reached.set("1");
                 }
-                match parsed.error {
+                match error {
                     Some(message) => {
                         self.log_body_processor_error(true, "JSON", &message);
                         self.reqbody_error.set("1");
@@ -204,35 +242,75 @@ impl Transaction {
                         self.reqbody_processor_error.set("1");
                         self.reqbody_processor_error_msg.set(message);
                     },
-                    None => self.set_tx_variable("json_request_body", body),
+                    None => {
+                        if self.try_charge_body_memory(body.len()) {
+                            self.set_tx_variable("json_request_body", body);
+                        }
+                    },
                 }
             },
-            BodyProcessor::Xml => match xml::parse(body) {
-                Ok(document) => {
-                    for value in document.attribute_values {
-                        self.request_xml.add("//@*", value);
-                    }
-                    for value in document.text {
-                        self.request_xml.add("/*", value);
-                    }
-                },
-                Err(message) => {
-                    self.log_body_processor_error(true, "XML", &message);
-                    // Go stores the processor's own error unchanged, which for XML is
-                    // `encoding/xml`'s `XML syntax error on line N: ...`
-                    // (`internal/corazawaf/transaction.go:1780-1786`, v3.8.1).
-                    self.reqbody_error.set("1");
-                    self.reqbody_error_msg.set(format!("XML: {message}"));
-                    self.reqbody_processor_error.set("1");
-                    self.reqbody_processor_error_msg.set(message);
-                },
+            BodyProcessor::Xml => {
+                // Count and byte bounds cover the parser's strings, value
+                // vectors, and open-element stack before parsing starts. The
+                // scans run only for an attached budget; without one nothing
+                // is charged and the default path skips the extra passes.
+                let parser_bound = if self.has_body_budget() {
+                    xml::allocation_bound(body)
+                } else {
+                    0
+                };
+                if !self.try_charge_body_memory(parser_bound) {
+                    return;
+                }
+                match xml::parse(body) {
+                    Ok(document) => {
+                        for value in document.attribute_values {
+                            if !self.try_charge_map_insert(b"//@*", value.as_bytes(), 1) {
+                                break;
+                            }
+                            self.request_xml.add("//@*", value);
+                        }
+                        for value in document.text {
+                            if !self.try_charge_map_insert(b"/*", value.as_bytes(), 1) {
+                                break;
+                            }
+                            self.request_xml.add("/*", value);
+                        }
+                    },
+                    Err(message) => {
+                        self.log_body_processor_error(true, "XML", &message);
+                        // Go stores the processor's own error unchanged, which for XML is
+                        // `encoding/xml`'s `XML syntax error on line N: ...`
+                        // (`internal/corazawaf/transaction.go:1780-1786`, v3.8.1).
+                        self.reqbody_error.set("1");
+                        self.reqbody_error_msg.set(format!("XML: {message}"));
+                        self.reqbody_processor_error.set("1");
+                        self.reqbody_processor_error_msg.set(message);
+                    },
+                }
+                self.release_body_memory(parser_bound);
             },
         }
     }
 
     /// Populate multipart fields, metadata, and temporary upload files.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "publishing each part family keeps the Go multipart order explicit"
+    )]
     fn process_multipart_body(&mut self, body: &[u8], truncated: bool) -> Result<(), String> {
         let content_type = self.request_headers.first("content-type").unwrap_or_default().to_vec();
+        // Count and byte bounds cover part structs, header entries, and copied
+        // input bytes before parsing starts. As with XML, the scans run only
+        // for an attached budget.
+        let parser_bound = if self.has_body_budget() {
+            multipart::allocation_bound(body)
+        } else {
+            0
+        };
+        if !self.try_charge_body_memory(parser_bound) {
+            return Ok(());
+        }
         let (parts, failure) = multipart::parse(&content_type, body, truncated);
         let reject_uploads = self.config.reject_multipart_file_uploads
             && parts.iter().any(|part| {
@@ -272,7 +350,13 @@ impl Transaction {
                 let mut header = multipart::canonical_header_name(name).into_bytes();
                 header.extend_from_slice(b": ");
                 header.extend_from_slice(value);
+                if !self.try_charge_map_insert(&part.name, &header, 1) {
+                    return Ok(());
+                }
                 self.multipart_part_headers.add_bytes(&part.name, header);
+            }
+            if !self.try_charge_map_insert(&part.name, &part.name, 1) {
+                return Ok(());
             }
             self.multipart_name.add_bytes(&part.name, &part.name);
             // Go publishes only non-empty filenames, while a `filename*` that decoded to
@@ -281,13 +365,25 @@ impl Transaction {
             let filename = part.filename.as_deref().filter(|filename| !filename.is_empty());
             let alt_filename = part.alt_filename.as_deref().filter(|filename| !filename.is_empty());
             if let Some(filename) = filename {
+                if !self.try_charge_map_insert(&part.name, filename, 1) {
+                    return Ok(());
+                }
                 self.multipart_filename.add_bytes(&part.name, filename);
             }
             if let Some(filename) = alt_filename {
+                if !self.try_charge_map_insert(&part.name, filename, 1) {
+                    return Ok(());
+                }
                 self.multipart_filename.add_bytes(&part.name, filename);
             }
             if let Some(encoding) = &part.filename_encoding {
+                if !self.try_charge_map_insert(&part.name, &encoding.charset, 1) {
+                    return Ok(());
+                }
                 self.multipart_filename_charset.add_bytes(&part.name, &encoding.charset);
+                if !self.try_charge_map_insert(&part.name, &encoding.language, 1) {
+                    return Ok(());
+                }
                 self.multipart_filename_language
                     .add_bytes(&part.name, &encoding.language);
             }
@@ -295,26 +391,47 @@ impl Transaction {
                 self.multipart_strict_error.set("1");
             }
 
-            let size = u64::try_from(part.data.len()).map_err(|error| format!("multipart size overflow: {error}"))?;
+            let size = match u64::try_from(part.data.len()) {
+                Ok(size) => size,
+                Err(error) => return Err(format!("multipart size overflow: {error}")),
+            };
 
             // Go promotes `altFilename` when the primary filename is empty and treats a
             // part with no non-empty filename as a field, which is what an empty file
             // input sends (`internal/bodyprocessors/multipart.go:106-115`, v3.8.1).
             if let Some(filename) = filename.or(alt_filename) {
-                total_size = total_size
-                    .checked_add(size)
-                    .ok_or_else(|| "multipart size overflow".to_owned())?;
+                total_size = if let Some(total) = total_size.checked_add(size) {
+                    total
+                } else {
+                    return Err("multipart size overflow".to_owned());
+                };
                 // Past the limit `FILES`, `FILES_SIZES` and `FILES_NAMES` still record the
                 // upload, as Go always does: only the temporary file write stops.
                 let over_limit = file_count >= self.config.upload_file_limit;
                 if over_limit {
                     self.multipart_strict_error.set("1");
                 }
+                let size_text = size.to_string();
+                if !self.try_charge_map_insert(b"", filename, 1) {
+                    return Ok(());
+                }
                 self.files.add("", filename);
-                self.files_sizes.set_index(filename, 0, size.to_string());
+                if !self.try_charge_map_insert(filename, size_text.as_bytes(), 1) {
+                    return Ok(());
+                }
+                self.files_sizes.set_index(filename, 0, size_text.as_str());
                 if let Some(alt_filename) = alt_filename.filter(|&alt| alt != filename) {
+                    if !self.try_charge_map_insert(b"", alt_filename, 1) {
+                        return Ok(());
+                    }
                     self.files.add("", alt_filename);
-                    self.files_sizes.set_index(alt_filename, 0, size.to_string());
+                    if !self.try_charge_map_insert(alt_filename, size_text.as_bytes(), 1) {
+                        return Ok(());
+                    }
+                    self.files_sizes.set_index(alt_filename, 0, size_text.as_str());
+                }
+                if !self.try_charge_map_insert(b"", &part.name, 1) {
+                    return Ok(());
                 }
                 self.files_names.add("", &part.name);
                 file_count += 1;
@@ -330,16 +447,28 @@ impl Transaction {
                     self.multipart_strict_error.set("1");
                     continue;
                 };
-                let path =
-                    save_to_temp(&upload_dir, part.data).inspect_err(|_| self.multipart_strict_error.set("1"))?;
-                self.files_tmp_names.add("", path.to_string_lossy().as_bytes());
-                self.uploaded_paths.push(path);
+                let path = match save_to_temp(&upload_dir, part.data) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.multipart_strict_error.set("1");
+                        return Err(error);
+                    },
+                };
+                // Record ownership before any later admission check so transaction
+                // finalization removes the file on every failure path.
+                self.uploaded_paths.push(path.clone());
+                let path_text = path.to_string_lossy();
+                if !self.try_charge_map_insert(b"", path_text.as_bytes(), 1) {
+                    return Ok(());
+                }
+                self.files_tmp_names.add("", path_text.as_bytes());
             } else {
                 self.add_post_argument(&part.name, part.data);
             }
         }
 
         self.files_combined_size.set(total_size.to_string());
+        self.release_body_memory(parser_bound);
         match failure {
             Some(failure) => Err(failure.message),
             None => Ok(()),
@@ -451,18 +580,27 @@ pub(super) fn process_custom_body_processor(
     }
 
     for (name, value) in output.arguments {
+        if tx.body_budget_exhausted() {
+            break;
+        }
         match direction {
             BodyDirection::Request => tx.add_post_argument(name, value),
             BodyDirection::Response => add_response_body_argument(tx, &name, &value),
         }
     }
     for (path, value) in output.xml {
+        if tx.body_budget_exhausted() || !tx.try_charge_map_insert(&path, &value, 1) {
+            break;
+        }
         match direction {
             BodyDirection::Request => tx.request_xml.add_bytes(&path, &value),
             BodyDirection::Response => tx.response_xml.add_bytes(&path, &value),
         }
     }
     for file in &output.files {
+        if tx.body_budget_exhausted() {
+            break;
+        }
         let Some(upload_dir) = upload_dir.as_deref() else {
             if error.is_none() {
                 error = Some("file uploads are unavailable on this host".to_owned());
@@ -526,7 +664,9 @@ pub(super) fn selected_custom_body_processor(
 /// Publish response arguments under the same per-collection argument limit as JSON.
 fn add_response_body_argument(tx: &mut Transaction, name: &[u8], value: &[u8]) {
     if tx.response_args.value_count() < tx.config.argument_limit {
-        tx.response_args.add_bytes(name, value);
+        if tx.try_charge_map_insert(name, value, 1) {
+            tx.response_args.add_bytes(name, value);
+        }
     } else {
         tx.arguments_limit_reached.set("1");
     }
@@ -560,13 +700,25 @@ fn add_body_processor_file(tx: &mut Transaction, upload_dir: &Path, file: &BodyP
     let mut content_type = Vec::with_capacity(file.content_type.len().saturating_add(14));
     content_type.extend_from_slice(b"Content-Type: ");
     content_type.extend_from_slice(&file.content_type);
+    if !tx.try_charge_map_insert(&file.name, &content_type, 1) {
+        return Ok(());
+    }
     tx.multipart_part_headers.add_bytes(&file.name, content_type);
     // Past the limit `FILES`, `FILES_SIZES` and `FILES_NAMES` still record the upload,
     // as the built-in multipart processor does: only the temporary file write stops.
+    let size_text = size.to_string();
+    if !tx.try_charge_map_insert(b"", &file.filename, 1)
+        || !tx.try_charge_map_insert(&file.name, &file.name, 1)
+        || !tx.try_charge_map_insert(&file.name, &file.filename, 1)
+        || !tx.try_charge_map_insert(&file.filename, size_text.as_bytes(), 1)
+        || !tx.try_charge_map_insert(b"", &file.name, 1)
+    {
+        return Ok(());
+    }
     tx.files.add_bytes(b"", &file.filename);
     tx.multipart_name.add_bytes(&file.name, &file.name);
     tx.multipart_filename.add_bytes(&file.name, &file.filename);
-    tx.files_sizes.set_index(&file.filename, 0, size.to_string());
+    tx.files_sizes.set_index(&file.filename, 0, size_text.as_str());
     tx.files_names.add_bytes(b"", &file.name);
     tx.files_combined_size.set(total_size.to_string());
 
@@ -575,8 +727,13 @@ fn add_body_processor_file(tx: &mut Transaction, upload_dir: &Path, file: &BodyP
         return Ok(());
     }
     let path = save_to_temp(upload_dir, &file.bytes)?;
-    tx.files_tmp_names.add_bytes(b"", path.to_string_lossy().as_bytes());
-    tx.uploaded_paths.push(path);
+    // Record ownership before the admission check so cleanup cannot lose the file.
+    tx.uploaded_paths.push(path.clone());
+    let path_text = path.to_string_lossy();
+    if !tx.try_charge_map_insert(b"", path_text.as_bytes(), 1) {
+        return Ok(());
+    }
+    tx.files_tmp_names.add_bytes(b"", path_text.as_bytes());
     Ok(())
 }
 
@@ -615,7 +772,7 @@ pub(super) fn decode_pair(key: &[u8], value: &[u8]) -> (Vec<u8>, Vec<u8>) {
 /// full path rewritten for every leaf, so memory grows with depth times leaves
 /// while the entry count grows only with leaves. Go Coraza uses the same factor
 /// (`internal/bodyprocessors/json.go:113`); see the comment there.
-const FLATTEN_BYTES_FACTOR: usize = 8;
+pub(super) const FLATTEN_BYTES_FACTOR: usize = 8;
 
 /// Keeps small bodies unaffected, where a few long keys can legitimately
 /// outweigh the input (`internal/bodyprocessors/json.go:117`).
@@ -628,6 +785,8 @@ enum JsonFlattenError {
     Recursion,
     /// The flattened form outgrew its byte budget.
     Budget,
+    /// The transaction body budget refused an argument row.
+    Admission,
 }
 
 /// A JSON body flattened the way Go Coraza's `readJSON` does.
@@ -638,6 +797,8 @@ pub(super) struct JsonBody {
     pub(super) truncated: bool,
     /// The parser error message, after any best-effort arguments were collected.
     pub(super) error: Option<String>,
+    /// Transaction budget charged for the flattened argument rows.
+    pub(super) charged: usize,
 }
 
 /// Flattened arguments in first-discovery order.
@@ -707,6 +868,17 @@ impl JsonArguments {
     }
 }
 
+/// A JSON string token: its raw content and whether it carries escapes.
+///
+/// Unescaping is deferred to the flattener so the temporary buffer it
+/// allocates can be admitted against the transaction body budget first.
+struct RawJsonString<'a> {
+    /// Bytes between the quotes.
+    content: &'a [u8],
+    /// Whether the content holds escapes that need unescaping.
+    escaped: bool,
+}
+
 /// A JSON value as gjson sees it while flattening.
 enum JsonValue<'a> {
     /// An object or array.
@@ -716,8 +888,8 @@ enum JsonValue<'a> {
         /// Offset of `raw[0]` in the body.
         base: usize,
     },
-    /// A string, holding its unescaped content.
-    String(Cow<'a, [u8]>),
+    /// A string, holding its raw content and escape state.
+    String(RawJsonString<'a>),
     /// A null, which Go Coraza flattens to an empty string.
     Null,
     /// A `true` literal, holding its raw token.
@@ -731,7 +903,7 @@ enum JsonValue<'a> {
 /// A child of an object, an array element, or the single value of a scalar root.
 enum JsonKey<'a> {
     /// An object member name, unescaped.
-    Name(Cow<'a, [u8]>),
+    Name(RawJsonString<'a>),
     /// An array element index, or the zero key gjson gives a scalar root.
     Index(usize),
 }
@@ -815,7 +987,7 @@ impl<'a> JsonChildScanner<'a> {
     }
 
     /// The next child, with its key, in document order.
-    fn next(&mut self, containers: &ContainerIndex) -> Option<(JsonKey<'a>, JsonValue<'a>)> {
+    fn next(&mut self, containers: &ContainerIndex<'_>) -> Option<(JsonKey<'a>, JsonValue<'a>)> {
         if let Some(single) = self.single.take() {
             return Some((JsonKey::Index(0), single));
         }
@@ -833,11 +1005,7 @@ impl<'a> JsonChildScanner<'a> {
                     return None;
                 }
                 let content = raw.get(key_start + 1..end.checked_sub(1)?).unwrap_or_default();
-                let name = if escaped {
-                    Cow::Owned(unescape_json_string(content))
-                } else {
-                    Cow::Borrowed(content)
-                };
+                let name = RawJsonString { content, escaped };
                 self.offset = end;
                 self.skip_separators(raw);
                 let (end, value) = parse_any_value(raw, self.offset, self.base, containers)?;
@@ -880,10 +1048,134 @@ struct JsonFrame<'a> {
     array_len: usize,
 }
 
+/// Bytes `vec` allocates when it grows to hold `additional` more elements.
+///
+/// Rust grows a full vector by doubling its capacity, with a minimum first
+/// allocation, so the predicted capacity is exactly the one the next push
+/// makes; a push that fits the current capacity allocates nothing.
+fn vec_growth_bytes<T>(vec: &Vec<T>, additional: usize) -> usize {
+    let required = vec.len().saturating_add(additional);
+    if required <= vec.capacity() {
+        return 0;
+    }
+    let minimum = if size_of::<T>() == 1 { 8 } else { 4 };
+    let new_capacity = vec.capacity().saturating_mul(2).max(required).max(minimum);
+    new_capacity
+        .saturating_sub(vec.capacity())
+        .saturating_mul(size_of::<T>())
+}
+
+/// Admit one vector's growth, returning the bytes charged.
+///
+/// Returns `None` when the budget refused the charge; the vector is unchanged.
+fn admit_growth<T>(vec: &Vec<T>, additional: usize, budget: Option<&BodyBudget>) -> Option<usize> {
+    let bytes = vec_growth_bytes(vec, additional);
+    match budget {
+        Some(budget) if bytes > 0 && !budget.try_charge(bytes) => None,
+        _ => Some(bytes),
+    }
+}
+
+/// Body-budget admission for one JSON flattening walk.
+///
+/// Scratch charges cover the container index handed to the walk and the
+/// frames stack and path buffer for the walk's own lifetime. Temp charges
+/// cover the one key or value being unescaped and the bounded decimal an
+/// array index formats to, released once the item is recorded. A refused
+/// charge keeps the walk from allocating; the budget is exhausted then, so
+/// the transaction fails closed.
+struct JsonAdmission<'b> {
+    /// The transaction budget, when attached.
+    budget: Option<&'b BodyBudget>,
+    /// Scratch bytes held for the whole walk.
+    scratch: usize,
+    /// Temporary bytes held for the item being flattened.
+    temps: usize,
+}
+
+impl<'b> JsonAdmission<'b> {
+    /// Start a walk against `budget`.
+    fn new(budget: Option<&'b BodyBudget>) -> Self {
+        Self {
+            budget,
+            scratch: 0,
+            temps: 0,
+        }
+    }
+
+    /// Charge scratch, held until the walk's buffers are freed.
+    fn charge_scratch(&mut self, bytes: usize) -> bool {
+        self.charge(bytes, false)
+    }
+
+    /// Charge a temporary, held until the current item ends.
+    fn charge_temp(&mut self, bytes: usize) -> bool {
+        self.charge(bytes, true)
+    }
+
+    /// Charge `bytes` into the scratch or temporary total.
+    fn charge(&mut self, bytes: usize, temp: bool) -> bool {
+        let Some(budget) = self.budget else {
+            return true;
+        };
+        if !budget.try_charge(bytes) {
+            return false;
+        }
+        if temp {
+            self.temps = self.temps.saturating_add(bytes);
+        } else {
+            self.scratch = self.scratch.saturating_add(bytes);
+        }
+        true
+    }
+
+    /// Release the current item's temporaries.
+    fn release_temps(&mut self) {
+        if self.temps > 0 {
+            if let Some(budget) = self.budget {
+                budget.release(self.temps);
+            }
+            self.temps = 0;
+        }
+    }
+
+    /// Release every walk charge, after the scratch buffers are freed.
+    fn release_all(&mut self) {
+        self.release_temps();
+        if self.scratch > 0 {
+            if let Some(budget) = self.budget {
+                budget.release(self.scratch);
+            }
+            self.scratch = 0;
+        }
+    }
+}
+
+/// Unescape one JSON string, admitting its temporary buffer first.
+///
+/// The unescaped output is never longer than the raw content, so the content
+/// length is the exact admission bound.
+fn unescape_item<'a>(
+    raw: &RawJsonString<'a>,
+    admission: &mut JsonAdmission<'_>,
+) -> Result<Cow<'a, [u8]>, JsonFlattenError> {
+    if !raw.escaped {
+        return Ok(Cow::Borrowed(raw.content));
+    }
+    if !admission.charge_temp(raw.content.len()) {
+        return Err(JsonFlattenError::Admission);
+    }
+    Ok(Cow::Owned(unescape_json_string(raw.content)))
+}
+
 /// The state of one gjson-compatible flattening walk.
-struct JsonFlattener {
+struct JsonFlattener<'b> {
     /// Flattened paths and their values, in discovery order.
     values: JsonArguments,
+    /// Optional transaction budget for the argument rows.
+    budget: Option<&'b BodyBudget>,
+    /// Budget bytes charged for the argument rows.
+    charged: usize,
     /// Bytes retained in `values` so far.
     used_bytes: usize,
     /// Values counted against the argument limit.
@@ -896,11 +1188,13 @@ struct JsonFlattener {
     byte_budget: usize,
 }
 
-impl JsonFlattener {
+impl<'b> JsonFlattener<'b> {
     /// Start a walk with the given caps.
-    fn new(argument_limit: usize, byte_budget: usize) -> Self {
+    fn new(argument_limit: usize, byte_budget: usize, budget: Option<&'b BodyBudget>) -> Self {
         Self {
             values: JsonArguments::new(),
+            budget,
+            charged: 0,
             used_bytes: 0,
             argument_count: 0,
             length_count: 0,
@@ -914,10 +1208,15 @@ impl JsonFlattener {
         &mut self,
         root: Option<JsonValue<'a>>,
         max_recursion: usize,
-        containers: &ContainerIndex,
+        containers: &ContainerIndex<'_>,
+        admission: &mut JsonAdmission<'_>,
     ) -> Result<bool, JsonFlattenError> {
         if max_recursion == 0 {
             return Err(JsonFlattenError::Recursion);
+        }
+        // `b"json".to_vec()` and the root frame allocate before the walk starts.
+        if !admission.charge_scratch(4_usize.saturating_add(size_of::<JsonFrame<'a>>())) {
+            return Err(JsonFlattenError::Admission);
         }
         let mut path = b"json".to_vec();
         let mut frames: Vec<JsonFrame<'a>> = vec![JsonFrame {
@@ -944,7 +1243,7 @@ impl JsonFlattener {
                         if self.argument_limit > 0 && self.length_count >= self.argument_limit {
                             truncated = true;
                         } else {
-                            self.write_array_length(&path, &frame)?;
+                            self.write_array_length(&path, &frame, admission)?;
                         }
                     }
                     path.truncate(frame.restore_len);
@@ -957,26 +1256,45 @@ impl JsonFlattener {
                     if self.argument_limit > 0 && self.argument_count >= self.argument_limit {
                         return Ok(true);
                     }
-                    self.flatten_item(&mut frames, &mut path, key, value)?;
+                    self.flatten_item(&mut frames, &mut path, admission, key, value)?;
+                    admission.release_temps();
                 },
             }
         }
     }
 
     /// Write one container's array-length entry.
-    fn write_array_length(&mut self, path: &[u8], frame: &JsonFrame<'_>) -> Result<(), JsonFlattenError> {
+    fn write_array_length(
+        &mut self,
+        path: &[u8],
+        frame: &JsonFrame<'_>,
+        admission: &mut JsonAdmission<'_>,
+    ) -> Result<(), JsonFlattenError> {
+        // An array length formats to at most 20 bytes, u64's widest decimal.
+        if !admission.charge_temp(20) {
+            return Err(JsonFlattenError::Admission);
+        }
         let length = frame.array_len.to_string();
         let key = path.get(..frame.base_len).unwrap_or_default();
-        self.record(key, length.as_bytes())?;
+        let recorded = self.record(key, length.as_bytes());
+        // The formatted length must be freed before its temp credit returns.
+        drop(length);
+        admission.release_temps();
+        recorded?;
         self.length_count += 1;
         Ok(())
     }
 
     /// Flatten one child.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the walk's frames, path and admission state are explicit at each step"
+    )]
     fn flatten_item<'a>(
         &mut self,
         frames: &mut Vec<JsonFrame<'a>>,
         path: &mut Vec<u8>,
+        admission: &mut JsonAdmission<'_>,
         key: JsonKey<'a>,
         value: JsonValue<'a>,
     ) -> Result<(), JsonFlattenError> {
@@ -985,11 +1303,28 @@ impl JsonFlattener {
         };
         let depth_remaining = frame.depth_remaining;
         let previous_len = path.len();
+        if !admission.charge_scratch(vec_growth_bytes(path, 1)) {
+            return Err(JsonFlattenError::Admission);
+        }
         path.push(b'.');
         match key {
-            JsonKey::Name(name) => path.extend_from_slice(name.as_ref()),
+            JsonKey::Name(name) => {
+                let name = unescape_item(&name, admission)?;
+                if !admission.charge_scratch(vec_growth_bytes(path, name.len())) {
+                    return Err(JsonFlattenError::Admission);
+                }
+                path.extend_from_slice(name.as_ref());
+            },
             JsonKey::Index(index) => {
-                path.extend_from_slice(index.to_string().as_bytes());
+                // The decimal index is at most 20 bytes, as with array lengths.
+                if !admission.charge_temp(20) {
+                    return Err(JsonFlattenError::Admission);
+                }
+                let index = index.to_string();
+                if !admission.charge_scratch(vec_growth_bytes(path, index.len())) {
+                    return Err(JsonFlattenError::Admission);
+                }
+                path.extend_from_slice(index.as_bytes());
                 frame.array_len += 1;
             },
         }
@@ -998,6 +1333,9 @@ impl JsonFlattener {
                 let depth = depth_remaining.saturating_sub(1);
                 if depth == 0 {
                     return Err(JsonFlattenError::Recursion);
+                }
+                if !admission.charge_scratch(vec_growth_bytes(frames, 1)) {
+                    return Err(JsonFlattenError::Admission);
                 }
                 frames.push(JsonFrame {
                     scanner: JsonChildScanner::container(raw, base),
@@ -1008,7 +1346,7 @@ impl JsonFlattener {
                 });
                 return Ok(());
             },
-            JsonValue::String(text) => text,
+            JsonValue::String(text) => unescape_item(&text, admission)?,
             JsonValue::Null => Cow::Borrowed(b""),
             JsonValue::True(raw) | JsonValue::False(raw) | JsonValue::Number(raw) => Cow::Borrowed(raw),
         };
@@ -1025,6 +1363,17 @@ impl JsonFlattener {
             return Err(JsonFlattenError::Budget);
         }
         self.used_bytes = used;
+        let charge = key
+            .len()
+            .saturating_mul(3)
+            .saturating_add(value.len())
+            .saturating_add(JSON_ARGUMENT_ENTRY_BYTES);
+        if let Some(budget) = self.budget {
+            if !budget.try_charge(charge) {
+                return Err(JsonFlattenError::Admission);
+            }
+            self.charged = self.charged.saturating_add(charge);
+        }
         self.values.push(key, value.to_vec());
         Ok(())
     }
@@ -1115,16 +1464,42 @@ fn skip_squashed_string(input: &[u8], quote: usize) -> usize {
 /// flatten. Only containers that themselves hold another container are stored:
 /// their end lets an enclosing scan skip a subtree it already covered, while a
 /// leaf container's scan is its own size and happens once.
-struct ContainerIndex {
+struct ContainerIndex<'b> {
     /// Absolute start offsets, in increasing order.
     starts: Vec<usize>,
     /// End offsets, one past the closing byte, parallel to `starts`.
     ends: Vec<usize>,
+    /// Releases the vectors' charge once they are freed. Declared last so
+    /// its drop runs after the vectors above, unlike a `Drop` on this
+    /// struct, which would run before them and release credit while the
+    /// buffers are still live.
+    release: IndexRelease<'b>,
 }
 
-impl ContainerIndex {
+/// Charge ownership for one admitted scratch vector set.
+struct IndexRelease<'b> {
+    /// Budget the vectors were charged against.
+    budget: Option<&'b BodyBudget>,
+    /// Bytes charged for the vectors.
+    charged: usize,
+}
+
+impl Drop for IndexRelease<'_> {
+    fn drop(&mut self) {
+        if let Some(budget) = self.budget {
+            budget.release(self.charged);
+        }
+    }
+}
+
+impl<'b> ContainerIndex<'b> {
     /// Build an index from `input`, capturing containers up to `max_recursion + 1`.
-    fn build(input: &[u8], max_recursion: usize) -> Self {
+    ///
+    /// Every vector growth is admitted before it allocates, so a refused
+    /// charge returns `None`; the partially built index then drops and its
+    /// guard returns the credit it already took. The budget is exhausted
+    /// then and the transaction fails closed.
+    fn build(input: &[u8], max_recursion: usize, budget: Option<&'b BodyBudget>) -> Option<Self> {
         /// One container still open while the index is built.
         struct Open {
             /// Absolute offset of the opening bracket.
@@ -1139,7 +1514,12 @@ impl ContainerIndex {
         let mut index = Self {
             starts: Vec::new(),
             ends: Vec::new(),
+            release: IndexRelease { budget, charged: 0 },
         };
+        // Declared before `open` so it drops after it: the open stack's
+        // charge is returned when the build scope ends, not held by the
+        // index for the whole walk.
+        let mut open_charge = IndexRelease { budget, charged: 0 };
         let mut open: Vec<Open> = Vec::new();
         // Opens past `capture_depth`; their closes are absorbed here so the
         // captured stack stays bounded however deep the input nests.
@@ -1152,6 +1532,8 @@ impl ContainerIndex {
                     if let Some(top) = open.last_mut()
                         && top.row.is_none()
                     {
+                        index.release.charged += admit_growth(&index.starts, 1, budget)?;
+                        index.release.charged += admit_growth(&index.ends, 1, budget)?;
                         top.row = Some(index.starts.len());
                         index.starts.push(top.start);
                         index.ends.push(0);
@@ -1161,6 +1543,7 @@ impl ContainerIndex {
                     } else if open.len() == capture_depth {
                         deeper = 1;
                     } else {
+                        open_charge.charged += admit_growth(&open, 1, budget)?;
                         open.push(Open {
                             start: position,
                             row: None,
@@ -1189,14 +1572,18 @@ impl ContainerIndex {
                 *end = input.len();
             }
         }
-        index
+        Some(index)
     }
 
     /// An index with no entries.
-    fn empty() -> Self {
-        Self {
+    fn empty() -> ContainerIndex<'static> {
+        ContainerIndex {
             starts: Vec::new(),
             ends: Vec::new(),
+            release: IndexRelease {
+                budget: None,
+                charged: 0,
+            },
         }
     }
 
@@ -1212,7 +1599,12 @@ impl ContainerIndex {
 ///
 /// `base` is the body offset of `input[0]`, so the lookup shares coordinates
 /// with [`ContainerIndex`].
-fn squash_json_value<'a>(input: &'a [u8], start: usize, base: usize, containers: &ContainerIndex) -> (usize, &'a [u8]) {
+fn squash_json_value<'a>(
+    input: &'a [u8],
+    start: usize,
+    base: usize,
+    containers: &ContainerIndex<'_>,
+) -> (usize, &'a [u8]) {
     let absolute = base.saturating_add(start);
     if let Some(end) = containers.end(absolute) {
         let end = end.saturating_sub(base);
@@ -1290,7 +1682,7 @@ fn parse_any_value<'a>(
     input: &'a [u8],
     start: usize,
     base: usize,
-    containers: &ContainerIndex,
+    containers: &ContainerIndex<'_>,
 ) -> Option<(usize, JsonValue<'a>)> {
     let mut index = start;
     while let Some(&byte) = input.get(index) {
@@ -1314,12 +1706,7 @@ fn parse_any_value<'a>(
                 return None;
             }
             let content = input.get(index + 1..end.checked_sub(1)?).unwrap_or_default();
-            let value = if escaped {
-                Cow::Owned(unescape_json_string(content))
-            } else {
-                Cow::Borrowed(content)
-            };
-            return Some((end, JsonValue::String(value)));
+            return Some((end, JsonValue::String(RawJsonString { content, escaped })));
         }
         match byte {
             b'n' if input.get(index + 1).is_some_and(|next| *next != b'u') => {
@@ -1384,7 +1771,7 @@ fn parse_json_root(input: &[u8]) -> Option<JsonValue<'_>> {
 }
 
 /// Reads the string gjson's `Parse` returns for a document that is one string.
-fn scan_root_string(input: &[u8], start: usize) -> Cow<'_, [u8]> {
+fn scan_root_string(input: &[u8], start: usize) -> RawJsonString<'_> {
     let mut index = start + 1;
     while let Some(&byte) = input.get(index) {
         if byte > b'\\' {
@@ -1392,7 +1779,10 @@ fn scan_root_string(input: &[u8], start: usize) -> Cow<'_, [u8]> {
             continue;
         }
         if byte == b'"' {
-            return Cow::Borrowed(input.get(start + 1..index).unwrap_or_default());
+            return RawJsonString {
+                content: input.get(start + 1..index).unwrap_or_default(),
+                escaped: false,
+            };
         }
         if byte == b'\\' {
             index += 1;
@@ -1402,15 +1792,24 @@ fn scan_root_string(input: &[u8], start: usize) -> Cow<'_, [u8]> {
                     continue;
                 }
                 if escaped == b'"' && !is_escaped_quote(input, index, 1) {
-                    return Cow::Owned(unescape_json_string(input.get(start + 1..index).unwrap_or_default()));
+                    return RawJsonString {
+                        content: input.get(start + 1..index).unwrap_or_default(),
+                        escaped: true,
+                    };
                 }
                 index += 1;
             }
-            return Cow::Owned(unescape_json_string(input.get(start + 1..).unwrap_or_default()));
+            return RawJsonString {
+                content: input.get(start + 1..).unwrap_or_default(),
+                escaped: true,
+            };
         }
         index += 1;
     }
-    Cow::Borrowed(input.get(start + 1..).unwrap_or_default())
+    RawJsonString {
+        content: input.get(start + 1..).unwrap_or_default(),
+        escaped: false,
+    }
 }
 
 /// Parses the first four hexadecimal digits as Go's `runeit` does.
@@ -1715,13 +2114,31 @@ fn scan_valid_literal(input: &[u8], index: usize, literal: &[u8]) -> Option<usiz
 ///
 /// The walk runs before validation so a valid prefix still populates arguments
 /// on a best-effort basis (`internal/bodyprocessors/json.go:141-179`).
-pub(super) fn read_json_body(body: &[u8], max_recursion: usize, argument_limit: usize) -> JsonBody {
+pub(super) fn read_json_body(
+    body: &[u8],
+    max_recursion: usize,
+    argument_limit: usize,
+    budget: Option<&BodyBudget>,
+) -> JsonBody {
     let containers = if max_recursion == 0 {
         ContainerIndex::empty()
     } else {
-        ContainerIndex::build(body, max_recursion)
+        match ContainerIndex::build(body, max_recursion, budget) {
+            Some(index) => index,
+            None => {
+                // Admission refused before the index could allocate. The
+                // budget is exhausted, so the transaction fails closed.
+                return JsonBody {
+                    arguments: JsonArguments::new(),
+                    truncated: false,
+                    error: None,
+                    charged: 0,
+                };
+            },
+        }
     };
-    read_json_with_index(body, max_recursion, argument_limit, &containers)
+    // The index releases its own charge when it drops, after the walk.
+    read_json_with_index(body, max_recursion, argument_limit, &containers, budget)
 }
 
 /// Flatten with the given container index; an empty index scans every container.
@@ -1729,11 +2146,13 @@ fn read_json_with_index(
     body: &[u8],
     max_recursion: usize,
     argument_limit: usize,
-    containers: &ContainerIndex,
+    containers: &ContainerIndex<'_>,
+    budget: Option<&BodyBudget>,
 ) -> JsonBody {
     let byte_budget = body.len().saturating_mul(FLATTEN_BYTES_FACTOR).max(FLATTEN_BYTES_FLOOR);
-    let mut flattener = JsonFlattener::new(argument_limit, byte_budget);
-    let (truncated, error) = match flattener.flatten(parse_json_root(body), max_recursion, containers) {
+    let mut flattener = JsonFlattener::new(argument_limit, byte_budget, budget);
+    let mut admission = JsonAdmission::new(budget);
+    let (truncated, error) = match flattener.flatten(parse_json_root(body), max_recursion, containers, &mut admission) {
         Ok(truncated) => (truncated, json_error_after_walk(body, max_recursion)),
         Err(JsonFlattenError::Recursion) => (
             false,
@@ -1746,11 +2165,16 @@ fn read_json_with_index(
                 body.len()
             )),
         ),
+        Err(JsonFlattenError::Admission) => (false, None),
     };
+    // The frames and path buffers are freed with the walk, so their scratch
+    // charge can return to the budget now.
+    admission.release_all();
     JsonBody {
         arguments: flattener.values,
         truncated,
         error,
+        charged: flattener.charged,
     }
 }
 
@@ -1783,11 +2207,9 @@ fn for_each_argument(arguments: &JsonArguments, mut visit: impl FnMut(&[u8], &[u
 pub(super) fn publish_json_arguments(tx: &mut Transaction, arguments: &JsonArguments, response: bool) {
     for_each_argument(arguments, |key, value| {
         if response {
-            tx.response_args.add_bytes(key, value);
+            add_response_body_argument(tx, key, value);
         } else {
-            tx.args_post.add_bytes(key, value);
-            tx.args.add_bytes(key, value);
-            tx.update_args_combined_size(key, value);
+            tx.insert_post_argument(key, value);
         }
     });
 }
@@ -2507,7 +2929,7 @@ mod json_tests {
 
     /// Flatten with Go Coraza's test limits: no argument cap, generous depth.
     fn flatten(body: &[u8]) -> JsonBody {
-        read_json_body(body, 10_000, 0)
+        read_json_body(body, 10_000, 0, None)
     }
 
     /// Values stored under `key`, in discovery order.
@@ -2633,8 +3055,8 @@ mod json_tests {
 
         for body in bodies {
             for (depth, limit) in [(1024, 1000), (3, 5), (0, 0)] {
-                let indexed = read_json_body(&body, depth, limit);
-                let scanned = read_json_with_index(&body, depth, limit, &ContainerIndex::empty());
+                let indexed = read_json_body(&body, depth, limit, None);
+                let scanned = read_json_with_index(&body, depth, limit, &ContainerIndex::empty(), None);
                 assert_eq!(snapshot(&indexed), snapshot(&scanned));
                 assert_eq!(indexed.truncated, scanned.truncated);
                 assert_eq!(indexed.error, scanned.error);
@@ -2691,7 +3113,7 @@ mod json_tests {
             (&padded, true, LIMIT + 3),
         ];
         for (body, truncated, expected_values) in cases {
-            let parsed = read_json_body(body, 10_000, LIMIT);
+            let parsed = read_json_body(body, 10_000, LIMIT, None);
             assert_eq!(parsed.error, None);
             assert_eq!(parsed.truncated, truncated);
             assert_eq!(total_values(&parsed), expected_values);
@@ -2723,7 +3145,7 @@ mod json_tests {
         long_key.push(b'}');
 
         for body in [long_paths, long_key] {
-            let parsed = read_json_body(&body, 10_000, LIMIT);
+            let parsed = read_json_body(&body, 10_000, LIMIT, None);
             let message = parsed.error.as_deref().unwrap_or_default();
             assert!(message.contains("flattened form exceeds"), "{message}");
             assert!(!parsed.truncated);
@@ -2750,7 +3172,7 @@ mod json_tests {
             );
         }
         ordinary.extend_from_slice(b"]}");
-        let parsed = read_json_body(&ordinary, 10_000, LIMIT);
+        let parsed = read_json_body(&ordinary, 10_000, LIMIT, None);
         assert_eq!(parsed.error, None);
         assert!(!parsed.truncated);
     }
@@ -2759,18 +3181,18 @@ mod json_tests {
     fn depth_uses_the_configured_limit_not_serde_default() {
         // 300 container levels exceed serde_json's default recursion limit of 128.
         let body = nested_objects(300);
-        let parsed = read_json_body(&body, 300, 0);
+        let parsed = read_json_body(&body, 300, 0, None);
         assert_eq!(parsed.error, None);
         assert_eq!(text(&parsed, &format!("json.{}a", "a.".repeat(299))), ["1"]);
 
-        let parsed = read_json_body(&body, 299, 0);
+        let parsed = read_json_body(&body, 299, 0, None);
         assert_eq!(
             parsed.error.as_deref(),
             Some("max recursion reached while reading json object")
         );
 
         // 5,000 levels are flattened iteratively without exhausting the stack.
-        let parsed = read_json_body(&nested_objects(5_000), 5_000, 0);
+        let parsed = read_json_body(&nested_objects(5_000), 5_000, 0, None);
         assert_eq!(parsed.error, None);
     }
 
@@ -2779,7 +3201,7 @@ mod json_tests {
         let mut body = b"{\"a\":".repeat(15_000);
         body.push(b'1');
         body.extend(std::iter::repeat_n(b'}', 15_000));
-        let parsed = read_json_body(&body, 10_000, 0);
+        let parsed = read_json_body(&body, 10_000, 0, None);
         assert_eq!(
             parsed.error.as_deref(),
             Some("max recursion reached while reading json object")
@@ -2873,5 +3295,361 @@ mod json_tests {
         assert_eq!(text(&parsed, "json.b"), ["😀"]);
         assert_eq!(text(&parsed, "json.c"), ["\u{fffd}"]);
         assert_eq!(text(&parsed, "json.d"), ["\u{fffd}"]);
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "budget tests use fixed valid rules")]
+mod body_budget_tests {
+    use std::{fmt::Write as _, sync::Arc};
+
+    use crate::{
+        seclang::Parser,
+        transaction::{BodyBudget, RetainedBodyBudget, Transaction},
+    };
+
+    /// Process `body` as `processor` under a budgeted transaction and return it.
+    fn budgeted(processor: &str, body: &[u8], shared: &Arc<RetainedBodyBudget>) -> Transaction {
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser.from_string(&format!(
+            "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor={processor}\""
+        )).unwrap();
+        let waf = parser.into_waf().unwrap();
+        let mut tx = waf.new_transaction();
+        tx.set_body_budget(BodyBudget::new(Arc::clone(shared)));
+        tx.process_uri("/", "POST", "HTTP/2");
+        tx.process_request_headers();
+        tx.process_request_body(body);
+        tx
+    }
+
+    #[test]
+    fn discarded_macro_expansions_do_not_exhaust_the_body_budget() {
+        const BODY: usize = 128 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(8 * 1024 * 1024));
+        let mut directives = String::from(
+            "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor=RAW\"\n",
+        );
+        // Each comparison expands the whole body twice over (buffer plus the
+        // variable copy); a hundred leaked expansions cannot fit the budget,
+        // a hundred scoped ones must.
+        for id in 2..102 {
+            writeln!(
+                directives,
+                "SecRule &REQUEST_BODY \"@streq %{{REQUEST_BODY}}\" \"id:{id},phase:2,pass,nolog\""
+            )
+            .unwrap();
+        }
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser.from_string(&directives).unwrap();
+        let waf = parser.into_waf().unwrap();
+        let mut tx = waf.new_transaction();
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        tx.process_uri("/", "POST", "HTTP/2");
+        tx.process_request_headers();
+        let result = tx.process_request_body(&vec![b'x'; BODY]);
+        assert!(result.is_none());
+        assert!(
+            !tx.body_budget_exhausted(),
+            "discarded macro expansions keep consuming retained-memory credit"
+        );
+    }
+
+    #[test]
+    fn container_index_scratch_is_admitted_before_growth_and_released() {
+        let shared = Arc::new(RetainedBodyBudget::new(1024 * 1024));
+        let body = b"{\"a\":{\"b\":{}}}".repeat(64);
+
+        // A fresh budget admits the growth; the open stack's charge is
+        // returned when the build ends, so the index holds only its own.
+        let budget = BodyBudget::new(Arc::clone(&shared));
+        let before = budget.used();
+        let index = super::ContainerIndex::build(&body, 8, Some(&budget)).unwrap();
+        assert!(budget.used() > before, "a container-rich body charges its index growth");
+        assert_eq!(
+            budget.used() - before,
+            index.release.charged,
+            "the open stack's charge is returned when the build scope ends"
+        );
+        drop(index);
+        assert_eq!(budget.used(), before, "a dropped index releases its charge");
+
+        // A budget that runs out mid-build refuses, and the partially built
+        // index returns the credit it already took when it drops.
+        let partial = Arc::new(RetainedBodyBudget::new(100));
+        let refused = BodyBudget::new(Arc::clone(&partial));
+        assert!(super::ContainerIndex::build(&body, 8, Some(&refused)).is_none());
+        assert!(refused.exhausted(), "a refused growth fails the stream closed");
+        assert_eq!(
+            refused.used(),
+            0,
+            "a refused build returns the credit its partial index already took"
+        );
+    }
+
+    #[test]
+    fn dense_json_container_scratch_requires_admission_and_is_released() {
+        // Members whose values are containers of empty containers: every unit
+        // grows the container index but flattens to no argument at all.
+        let mut body = vec![b'{'];
+        for index in 0..4_000 {
+            if index > 0 {
+                body.push(b',');
+            }
+            body.extend_from_slice(br#""a":{"b":{}}"#);
+        }
+        body.push(b'}');
+
+        // The steady state the transaction retains: body buffer plus the
+        // `json_request_body` variable, without the transient index scratch.
+        let generous = Arc::new(RetainedBodyBudget::new(64 * 1024 * 1024));
+        let tx = budgeted("JSON", &body, &generous);
+        assert!(!tx.body_budget_exhausted());
+        assert_eq!(tx.reqbody_error.get(), "0");
+        let steady = generous.used();
+        assert!(steady > 0);
+
+        // Room for the retained storage but not the container index: the walk
+        // is rejected before the index allocates, and fails closed.
+        let tight = Arc::new(RetainedBodyBudget::new(steady + 4096));
+        let tx = budgeted("JSON", &body, &tight);
+        assert!(
+            tx.body_budget_exhausted(),
+            "container-index scratch must be admitted before it allocates"
+        );
+        assert!(tx.interruption().is_some_and(|interruption| interruption.status == 500));
+        drop(tx);
+        assert_eq!(tight.used(), 0, "a rejected transaction releases its credit");
+
+        // With room for the scratch, the same body is admitted and released.
+        let enough = Arc::new(RetainedBodyBudget::new(64 * 1024 * 1024));
+        let tx = budgeted("JSON", &body, &enough);
+        assert!(!tx.body_budget_exhausted());
+        assert_eq!(tx.reqbody_error.get(), "0");
+        drop(tx);
+        assert_eq!(enough.used(), 0, "a finished transaction releases its credit");
+    }
+
+    #[test]
+    fn replacing_rule_message_keeps_live_buffer_capacity_admitted() {
+        let shared = Arc::new(RetainedBodyBudget::new(4 * 1024 * 1024));
+        let mut tx = Transaction::new("rule-message-capacity");
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        let large = "x".repeat(1024 * 1024);
+        tx.set_rule_variables(1, Some(&large), "", None, "unknown");
+        tx.set_rule_variables(2, Some("x"), "", None, "unknown");
+        let retained = tx.rule.allocated_bytes();
+        assert!(
+            shared.used() >= retained,
+            "RULE still owns {retained} allocation bytes, but only {} are admitted",
+            shared.used()
+        );
+        assert!(!tx.body_budget_exhausted());
+    }
+
+    #[test]
+    fn repeated_rule_messages_do_not_accumulate_credit() {
+        const BODY: usize = 128 * 1024;
+        let shared = Arc::new(RetainedBodyBudget::new(8 * 1024 * 1024));
+        let mut directives = String::from(
+            "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor=RAW\"\n",
+        );
+        // Every evaluation expands the whole body into `msg`; only one
+        // retained RULE.msg buffer exists at a time, so a hundred rules must
+        // not accumulate a hundred body-sized charges.
+        for id in 2..102 {
+            writeln!(
+                directives,
+                "SecRule &REQUEST_BODY \"@streq nomatch\" \"id:{id},phase:2,pass,nolog,msg:'%{{REQUEST_BODY}}'\""
+            )
+            .unwrap();
+        }
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser.from_string(&directives).unwrap();
+        let waf = parser.into_waf().unwrap();
+        let mut tx = waf.new_transaction();
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        tx.process_uri("/", "POST", "HTTP/2");
+        tx.process_request_headers();
+        let result = tx.process_request_body(&vec![b'x'; BODY]);
+        assert!(result.is_none());
+        assert!(
+            !tx.body_budget_exhausted(),
+            "repeated rule messages accumulate credit for overwritten buffers"
+        );
+    }
+
+    #[test]
+    fn selection_credit_is_released_after_its_values_drop_on_early_stop() {
+        use crate::transformations::{CustomTransformation, TransformationResult};
+
+        /// A transformation without an output bound, which stops the rule's
+        /// walk at the first selected value.
+        struct Unbounded;
+        impl CustomTransformation for Unbounded {
+            fn transform(&self, input: &[u8]) -> TransformationResult {
+                (input.to_vec(), false, None)
+            }
+        }
+
+        let shared = Arc::new(RetainedBodyBudget::new(1024 * 1024));
+        let mut parser = Parser::new();
+        parser.config_mut().multiphase_evaluation = true;
+        parser.register_transformation("unbounded", Arc::new(Unbounded));
+        parser
+            .from_string(
+                "SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 1048576\n\
+                 SecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor=URLENCODED\"\n\
+                 SecRule ARGS \"@streq nomatch\" \"id:2,phase:2,pass,nolog,t:unbounded\"",
+            )
+            .unwrap();
+        let waf = parser.into_waf().unwrap();
+        let mut tx = waf.new_transaction();
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        tx.process_uri("/", "POST", "HTTP/2");
+        tx.process_request_headers();
+        // Three ARGS values: when the walk stops at the first, the values
+        // iterator still owns the other two selected copies, so the
+        // selection charge may only return once they have dropped.
+        let result = tx.process_request_body(b"a=1&b=2&c=3");
+        assert!(
+            tx.body_budget_exhausted(),
+            "an unbounded transformation fails the stream closed"
+        );
+        assert!(result.is_some_and(|interruption| interruption.status == 500));
+        drop(tx);
+        assert_eq!(shared.used(), 0, "the stopped walk returns all of its credit");
+    }
+
+    #[test]
+    fn same_key_setvar_does_not_accumulate_credit() {
+        for engine in ["On", "DetectionOnly"] {
+            const BODY: usize = 128 * 1024;
+            let shared = Arc::new(RetainedBodyBudget::new(8 * 1024 * 1024));
+            let mut directives = format!(
+                "SecRuleEngine {engine}\nSecRequestBodyAccess On\nSecRequestBodyLimit 16777216\nSecAction \"id:1,phase:1,pass,nolog,ctl:requestBodyProcessor=RAW\"\n"
+            );
+            // Every rule writes the SAME TX key from the body; only one
+            // retained copy exists at a time, so a hundred writes must not
+            // accumulate a hundred body-sized charges.
+            for id in 2..102 {
+                writeln!(
+                    directives,
+                    "SecRule &REQUEST_BODY \"@eq 1\" \"id:{id},phase:2,pass,nolog,setvar:tx.saved=%{{REQUEST_BODY}}\""
+                )
+                .unwrap();
+            }
+            let mut parser = Parser::new();
+            parser.config_mut().multiphase_evaluation = true;
+            parser.from_string(&directives).unwrap();
+            let waf = parser.into_waf().unwrap();
+            let mut tx = waf.new_transaction();
+            tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+            tx.process_uri("/", "POST", "HTTP/2");
+            tx.process_request_headers();
+            let result = tx.process_request_body(&vec![b'x'; BODY]);
+            assert!(result.is_none(), "engine {engine}: no interruption expected");
+            assert!(
+                !tx.body_budget_exhausted(),
+                "engine {engine}: same-key setvar writes accumulate credit for replaced entries"
+            );
+            assert!(tx.body_memory_bytes() <= shared.used());
+            drop(tx);
+            assert_eq!(shared.used(), 0, "engine {engine}: all credit returns at drop");
+        }
+    }
+
+    #[test]
+    fn setvar_growth_shrink_removal_and_distinct_keys_reconcile() {
+        let shared = Arc::new(RetainedBodyBudget::new(8 * 1024 * 1024));
+        let mut tx = Transaction::new("setvar-reconcile");
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        let baseline = tx.body_memory_used();
+        let large: String = "x".repeat(512 * 1024);
+
+        // Growth: the first write charges the entry it creates.
+        tx.apply_setvar(&format!("tx.k={large}"));
+        assert!(!tx.body_budget_exhausted());
+        let grown = tx.body_memory_used();
+        assert!(grown > baseline + 256 * 1024, "a large entry is charged");
+
+        // Shrink: the replaced entry's charge returns with its storage.
+        tx.apply_setvar("tx.k=x");
+        assert!(!tx.body_budget_exhausted());
+        let shrunk = tx.body_memory_used();
+        assert!(
+            shrunk < grown - 256 * 1024,
+            "replacing a large entry with a small one returns the old charge"
+        );
+
+        // Distinct keys each retain their own charge.
+        tx.apply_setvar(&format!("tx.other={large}"));
+        let second = tx.body_memory_used();
+        assert!(second > shrunk + 256 * 1024, "a second key charges its own entry");
+        tx.apply_setvar(&format!("tx.k2={large}"));
+        assert!(tx.body_memory_used() > second + 256 * 1024, "a third key charges its own entry");
+
+        // Removal drops the entry and returns the charge the action took.
+        tx.apply_setvar("!tx.other");
+        assert!(tx.body_memory_used() < second, "removal returns the removed entry's charge");
+
+        drop(tx);
+        assert_eq!(shared.used(), 0, "all credit returns at drop");
+    }
+
+    #[test]
+    fn same_key_setenv_reconciles_like_setvar() {
+        let shared = Arc::new(RetainedBodyBudget::new(4 * 1024 * 1024));
+        let mut tx = Transaction::new("setenv-reconcile");
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+        let large: String = "y".repeat(256 * 1024);
+
+        tx.apply_setenv(&format!("k={large}"));
+        let first = tx.body_memory_used();
+        assert!(first > 128 * 1024, "a large ENV entry is charged");
+        for _ in 0..8 {
+            tx.apply_setenv(&format!("k={large}"));
+        }
+        assert!(!tx.body_budget_exhausted());
+        assert_eq!(
+            tx.body_memory_used(),
+            first,
+            "same-key setenv writes hold one entry's charge, not one per write"
+        );
+        drop(tx);
+        assert_eq!(shared.used(), 0);
+    }
+
+    #[test]
+    fn setvar_replacement_refusal_leaves_the_entry_unset() {
+        let shared = Arc::new(RetainedBodyBudget::new(64));
+        let mut tx = Transaction::new("setvar-refused");
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+
+        // A budget that cannot cover the entry refuses before the set
+        // allocates, exhausts the transaction, and stores nothing.
+        tx.apply_setvar(&format!("tx.k={}", "z".repeat(1024)));
+        assert!(tx.body_budget_exhausted(), "a refused replacement fails the stream closed");
+        assert_eq!(tx.get_variable(RuleVariable::TX, Some("k")), None, "the entry stays unset");
+        drop(tx);
+        assert_eq!(shared.used(), 0);
+    }
+
+    #[test]
+    fn xml_parser_bound_is_still_charged_with_an_attached_budget() {
+        let body = format!("<root>{}</root>", "<a>x</a>".repeat(1000)).into_bytes();
+        // The bound for this body is far larger than the body buffer, so a
+        // budget that admits the buffer must still refuse the parser scratch.
+        let tight = Arc::new(RetainedBodyBudget::new(32 * 1024));
+        let tx = budgeted("XML", &body, &tight);
+        assert!(
+            tx.body_budget_exhausted(),
+            "the XML parser bound stays admitted when a budget is attached"
+        );
+        drop(tx);
+        assert_eq!(tight.used(), 0);
     }
 }

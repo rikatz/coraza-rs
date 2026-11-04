@@ -58,6 +58,61 @@ impl TransformationFunction {
     }
 }
 
+/// Declared output bound for a built-in transformation.
+#[derive(Clone, Copy)]
+enum OutputBound {
+    /// Copies or shrinks its input.
+    Copy,
+    /// Percent-encodes each byte as at most three bytes.
+    UrlEncode,
+    /// Emits at most six bytes per malformed byte or code point.
+    Utf8ToUnicode,
+    /// Standard Base64 with padding.
+    Base64Encode,
+    /// Two hex digits per byte.
+    HexEncode,
+    /// Decimal length.
+    Length,
+    /// Fixed digest bytes, or the input copy in FIPS mode.
+    Hash,
+    /// Simple case mapping with U+FFFD for each malformed byte.
+    CaseMap,
+}
+
+impl OutputBound {
+    /// Resolve a canonical or mixed-case built-in name once at compile time.
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "urlencode" => Self::UrlEncode,
+            "utf8tounicode" => Self::Utf8ToUnicode,
+            "base64encode" => Self::Base64Encode,
+            "hexencode" => Self::HexEncode,
+            "length" => Self::Length,
+            "md5" | "sha1" => Self::Hash,
+            "lowercase" | "uppercase" => Self::CaseMap,
+            "base64decode" | "base64decodeext" | "cmdline" | "compresswhitespace" | "cssdecode" | "escapeseqdecode"
+            | "hexdecode" | "htmlentitydecode" | "jsdecode" | "none" | "normalisepath" | "normalizepath"
+            | "normalisepathwin" | "normalizepathwin" | "removecomments" | "removecommentschar" | "removenulls"
+            | "removewhitespace" | "replacecomments" | "replacenulls" | "trim" | "trimleft" | "trimright"
+            | "urldecode" | "urldecodeuni" => Self::Copy,
+            _ => return None,
+        })
+    }
+
+    /// Upper bound on the output allocation for `input_len`.
+    fn max_output_bytes(self, input_len: usize) -> usize {
+        match self {
+            Self::Copy => input_len,
+            Self::UrlEncode | Self::CaseMap => input_len.saturating_mul(3),
+            Self::Utf8ToUnicode => input_len.saturating_mul(6),
+            Self::Base64Encode => input_len.saturating_add(2).saturating_div(3).saturating_mul(4),
+            Self::HexEncode => input_len.saturating_mul(2),
+            Self::Length => MAX_USIZE_DECIMAL_DIGITS,
+            Self::Hash => input_len.max(MAX_USIZE_DECIMAL_DIGITS),
+        }
+    }
+}
+
 /// A transformation in the chain with its name for identification.
 #[derive(Clone)]
 struct NamedTransformation {
@@ -65,6 +120,9 @@ struct NamedTransformation {
     name: String,
     /// Function that performs the transformation.
     function: TransformationFunction,
+    /// Declared built-in output bound; `None` for custom transformations and
+    /// names whose output bound is unknown.
+    bound: Option<OutputBound>,
 }
 
 /// The transformation's name, as `t:` gives it, rather than a function address.
@@ -76,7 +134,7 @@ impl std::fmt::Debug for NamedTransformation {
 
 /// A chain of transformations to apply sequentially.
 ///
-/// Transformations are applied in the order they were added. The output of one
+/// Transformations are applied in the order they are added. The output of one
 /// transformation becomes the input to the next. Errors are collected but don't
 /// stop the chain from executing.
 #[derive(Debug, Clone)]
@@ -85,7 +143,39 @@ pub struct TransformationChain {
     transformations: Vec<NamedTransformation>,
 }
 
+/// Largest decimal spelling of a `usize`.
+const MAX_USIZE_DECIMAL_DIGITS: usize = 20;
+
+impl NamedTransformation {
+    /// Upper bound on the bytes this transformation can allocate.
+    fn max_output_bytes(&self, input_len: usize) -> Option<usize> {
+        self.bound.map(|bound| bound.max_output_bytes(input_len))
+    }
+}
+
 impl TransformationChain {
+    /// Upper bound on all output allocations this chain can make for one input.
+    ///
+    /// The bound includes the initial copy and every intermediate simple-mode
+    /// output, plus the retained intermediate copies in multi-match mode.
+    pub(crate) fn max_output_bytes(&self, input_len: usize, multi_match: bool) -> Option<usize> {
+        let mut current = input_len;
+        let mut total = if multi_match {
+            input_len.saturating_mul(2)
+        } else {
+            input_len
+        };
+        for transformation in &self.transformations {
+            current = transformation.max_output_bytes(current)?;
+            total = total.saturating_add(if multi_match {
+                current.saturating_mul(2)
+            } else {
+                current
+            });
+        }
+        Some(total)
+    }
+
     /// Create a new empty transformation chain.
     pub fn new() -> Self {
         Self {
@@ -115,9 +205,11 @@ impl TransformationChain {
             return Err("transformation name cannot be empty".to_owned());
         }
 
+        let bound = OutputBound::from_name(&name);
         self.transformations.push(NamedTransformation {
             name,
             function: TransformationFunction::Builtin(function),
+            bound,
         });
         Ok(())
     }
@@ -140,6 +232,7 @@ impl TransformationChain {
         self.transformations.push(NamedTransformation {
             name,
             function: TransformationFunction::Custom(transformation),
+            bound: None,
         });
         Ok(())
     }
@@ -610,5 +703,37 @@ mod tests {
         let (values, errors) = chain.apply_multimatch(b"HELLO");
         assert_eq!(values, vec![b"HELLO".to_vec(), b"hello".to_vec()]);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn max_output_bytes_bounds_expanding_builtins() {
+        let mut url = TransformationChain::new();
+        add(&mut url, "urlEncode", crate::transformations::url_encode);
+        assert_eq!(url.max_output_bytes(10, false), Some(40));
+
+        let mut unicode = TransformationChain::new();
+        add(&mut unicode, "utf8ToUnicode", crate::transformations::utf8_to_unicode);
+        assert_eq!(unicode.max_output_bytes(10, false), Some(70));
+
+        let mut hex = TransformationChain::new();
+        add(&mut hex, "hexEncode", hex_encode);
+        assert_eq!(hex.max_output_bytes(10, false), Some(30));
+
+        let mut case = TransformationChain::new();
+        add(&mut case, "lowercase", lowercase);
+        assert_eq!(
+            case.max_output_bytes(1024, false),
+            Some(4096),
+            "malformed bytes expand to three bytes while the input copy stays live"
+        );
+        assert_eq!(case.max_output_bytes(1024, true), Some(8192));
+    }
+
+    #[test]
+    fn max_output_bytes_has_no_bound_for_custom_transformations() {
+        let mut chain = TransformationChain::new();
+        assert!(chain.add_custom("custom", Arc::new(ErrorWithOutput)).is_ok());
+
+        assert_eq!(chain.max_output_bytes(10, false), None);
     }
 }

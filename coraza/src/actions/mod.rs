@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use crate::{
     body_processors::BodyProcessorFactory,
-    operators::{Macro, MacroError},
+    operators::{Macro, MacroError, ScopedExpansion},
     rules::TransformationChain,
     transaction::{AllowScope, Transaction},
     transformations::{self, CustomTransformation},
@@ -210,7 +210,10 @@ impl CompiledAction {
             },
             "drop" => tx.interrupt(rule.id, "drop", rule.status, ""),
             "redirect" => {
-                let data = Macro::new(&self.argument).map_or_else(|_| self.argument.clone(), |value| value.expand(tx));
+                let data = Macro::new(&self.argument).map_or_else(
+                    |_| ScopedExpansion::unbudgeted(self.argument.clone()),
+                    |value| value.expand_scoped(tx),
+                );
                 // Go's `redirect.go` only honors a status a client can redirect with;
                 // any other value falls back to 302.
                 let status = if matches!(rule.status, 301 | 302 | 303 | 307) {
@@ -218,7 +221,12 @@ impl CompiledAction {
                 } else {
                     302
                 };
-                tx.interrupt(rule.id, "redirect", status, &data);
+                // The interruption retains a copy of the expanded target; a
+                // refused charge is sticky, so the copy is skipped and the
+                // budget failure itself fails the stream closed.
+                if tx.try_charge_body_memory(data.len()) {
+                    tx.interrupt(rule.id, "redirect", status, &data);
+                }
             },
             "allow" => match self.argument.as_str() {
                 "" | "all" => tx.allow(AllowScope::All),

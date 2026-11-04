@@ -463,10 +463,20 @@ impl Operator for Pm {
         let matcher = if let Some(matcher) = &self.cached_matcher {
             matcher
         } else {
-            let patterns = self.macro_param.expand(tx).to_lowercase();
+            let parameter = self.macro_param.expand_scoped(tx);
+            // Unicode's only multi-character lowercase mapping (U+0130) grows
+            // 2 bytes to 3, so twice the expansion covers the lowercase copy.
+            // A refused charge is sticky: stop before the copy allocates.
+            let _lowercase_credit = tx.scoped_body_memory(parameter.len().saturating_mul(2));
+            if tx.body_budget_exhausted() {
+                return false;
+            }
+            let patterns = parameter.to_lowercase();
             // Go keeps empty phrases from `strings.Split`: an empty phrase
             // matches every input.
             let dict: Vec<&str> = patterns.split(' ').collect();
+            // shortcut: the phrase matcher built here is unbudgeted engine
+            // scratch, charge it if a macro-heavy pm ruleset needs admission
             match AhoCorasick::builder().ascii_case_insensitive(true).build(&dict) {
                 Ok(matcher) => {
                     expanded = matcher;
@@ -634,7 +644,8 @@ pub struct Within {
 
 impl Operator for Within {
     fn evaluate(&self, tx: &Transaction, input: &[u8], _out: &mut Outputs) -> bool {
-        contains_bytes(self.macro_param.expand(tx).as_bytes(), input)
+        let parameter = self.macro_param.expand_scoped(tx);
+        contains_bytes(parameter.as_bytes(), input)
     }
 }
 
@@ -658,7 +669,8 @@ pub struct StrMatch {
 
 impl Operator for StrMatch {
     fn evaluate(&self, tx: &Transaction, input: &[u8], _out: &mut Outputs) -> bool {
-        contains_bytes(input, self.macro_param.expand(tx).as_bytes())
+        let parameter = self.macro_param.expand_scoped(tx);
+        contains_bytes(input, parameter.as_bytes())
     }
 }
 

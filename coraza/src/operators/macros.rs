@@ -20,9 +20,18 @@
 
 //! Runtime expansion of `%{VARIABLE.key}` operator parameters.
 
-use std::fmt;
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
-use crate::{transaction::Transaction, types::RuleVariable};
+use crate::{
+    transaction::{ScopedCredit, Transaction},
+    types::RuleVariable,
+};
+
+/// Fixed `String` metadata charged with every budgeted macro expansion.
+const MACRO_EXPANSION_OVERHEAD_BYTES: usize = 64;
 
 /// A parsed parameter that can read values from a transaction at evaluation time.
 #[derive(Debug, Clone)]
@@ -95,18 +104,91 @@ impl Macro {
     }
 
     /// Expand references from `tx`. An unset variable keeps its original name text.
+    ///
+    /// This path charges no budget: it allocates whatever the expansion needs.
+    /// Engine callers that must account for a body-derived temporary use
+    /// [`Macro::expand_scoped`], whose credit is released once the buffer is
+    /// dropped.
     pub fn expand(&self, tx: &Transaction) -> String {
         let mut result = String::with_capacity(self.original.len());
+        self.push_tokens(tx, &mut result);
+        result
+    }
+
+    /// Expand references from `tx`, holding body-budget credit for the buffer.
+    ///
+    /// The charge covers the expansion buffer, allocated once at its exact
+    /// final bound so it never reallocates, the largest variable copy
+    /// [`Transaction::get_variable`] allocates while the buffer is alive, and
+    /// fixed `String` metadata. A refused charge exhausts the transaction and
+    /// returns an empty expansion, so the stream still fails closed.
+    ///
+    /// The returned guard releases its credit when it drops. When the buffer
+    /// moves into storage the destination charges itself, split it off with
+    /// [`ScopedExpansion::into_parts`] and drop the credit after the move.
+    pub(crate) fn expand_scoped(&self, tx: &Transaction) -> ScopedExpansion {
+        let Some(budget) = tx.body_budget() else {
+            return ScopedExpansion {
+                value: self.expand(tx),
+                credit: ScopedCredit::none(),
+            };
+        };
+        let expanded_len = self.expanded_len(tx);
+        let required = expanded_len
+            .saturating_add(self.max_variable_len(tx))
+            .saturating_add(MACRO_EXPANSION_OVERHEAD_BYTES);
+        let Some(credit) = budget.scoped(required) else {
+            tx.exhaust_body_budget();
+            return ScopedExpansion::refused();
+        };
+        let mut result = String::with_capacity(expanded_len);
+        self.push_tokens(tx, &mut result);
+        ScopedExpansion { value: result, credit }
+    }
+
+    /// Append every token's text to `result`.
+    ///
+    /// An unset variable keeps its original name text, pushed without an
+    /// intermediate copy.
+    fn push_tokens(&self, tx: &Transaction, result: &mut String) {
         for token in &self.tokens {
             match token.variable {
-                Some(variable) => result.push_str(
-                    &tx.get_variable(variable, token.key.as_deref())
-                        .unwrap_or_else(|| token.text.clone()),
-                ),
+                Some(variable) => {
+                    if let Some(value) = tx.get_variable(variable, token.key.as_deref()) {
+                        result.push_str(&value);
+                    } else {
+                        result.push_str(&token.text);
+                    }
+                },
                 None => result.push_str(&token.text),
             }
         }
-        result
+    }
+
+    /// Bytes the expansion can allocate, without allocating the expansion.
+    pub(crate) fn expanded_len(&self, tx: &Transaction) -> usize {
+        self.tokens.iter().fold(0_usize, |total, token| {
+            let length = token
+                .variable
+                .and_then(|variable| tx.variable_value_len(variable, token.key.as_deref()))
+                .unwrap_or(token.text.len());
+            total.saturating_add(length)
+        })
+    }
+
+    /// Largest single owned copy `get_variable` allocates during one expansion.
+    ///
+    /// Tokens are pushed one at a time, so only one variable copy is alive
+    /// alongside the result buffer; [`Transaction::variable_value_len`] is its
+    /// exact upper bound, lossy conversions included.
+    fn max_variable_len(&self, tx: &Transaction) -> usize {
+        self.tokens.iter().fold(0_usize, |largest, token| {
+            let Some(variable) = token.variable else {
+                return largest;
+            };
+            let length = tx.variable_value_len(variable, token.key.as_deref()).unwrap_or(0);
+            largest.max(length)
+        })
     }
 
     /// Return the unexpanded parameter.
@@ -190,6 +272,55 @@ impl Macro {
     }
 }
 
+/// A macro expansion holding body-budget credit for its buffer.
+///
+/// The credit is released when the expansion drops. Callers that move the
+/// buffer into storage the destination charges itself split the credit off
+/// with [`ScopedExpansion::into_parts`] and drop it once the move is done.
+pub(crate) struct ScopedExpansion {
+    /// The expanded text.
+    value: String,
+    /// Credit held for the buffer and the expansion's temporary copies.
+    credit: ScopedCredit,
+}
+
+impl ScopedExpansion {
+    /// An empty expansion holding no credit, for a refused admission.
+    fn refused() -> Self {
+        Self {
+            value: String::new(),
+            credit: ScopedCredit::none(),
+        }
+    }
+
+    /// Wrap a buffer no budget covers, such as a config-owned parameter.
+    pub(crate) fn unbudgeted(value: String) -> Self {
+        Self {
+            value,
+            credit: ScopedCredit::none(),
+        }
+    }
+
+    /// Split into the buffer and its credit.
+    pub(crate) fn into_parts(self) -> (String, ScopedCredit) {
+        (self.value, self.credit)
+    }
+}
+
+impl Deref for ScopedExpansion {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl DerefMut for ScopedExpansion {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "macro tests use fixed valid references")]
 mod tests {
@@ -236,5 +367,63 @@ mod tests {
         assert!(Macro::new("%{TX.value").is_err());
         assert!(Macro::new("%{not_a_variable.key}").is_err());
         assert!(Macro::new("%{TX.\u{00e9}}").is_err());
+    }
+
+    #[test]
+    fn scoped_expansion_holds_credit_only_while_the_buffer_is_alive() {
+        use std::sync::Arc;
+
+        use crate::transaction::{BodyBudget, RetainedBodyBudget};
+
+        let mut tx = Transaction::new("macro-scoped");
+        tx.set_tx_variable("id", b"42");
+        let shared = Arc::new(RetainedBodyBudget::new(64 * 1024));
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+
+        let expansion = Macro::new("%{TX.id}").unwrap().expand_scoped(&tx);
+        assert_eq!(&*expansion, "42");
+        assert!(shared.used() > 0, "the expansion buffer is charged while it is alive");
+        drop(expansion);
+        assert_eq!(shared.used(), 0, "a dropped expansion releases its credit");
+        assert!(!tx.body_budget_exhausted());
+    }
+
+    #[test]
+    fn scoped_expansion_refusal_exhausts_and_returns_empty() {
+        use std::sync::Arc;
+
+        use crate::transaction::{BodyBudget, RetainedBodyBudget};
+
+        let mut tx = Transaction::new("macro-refused");
+        tx.set_tx_variable("id", b"42");
+        let shared = Arc::new(RetainedBodyBudget::new(1));
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+
+        let expansion = Macro::new("%{TX.id}").unwrap().expand_scoped(&tx);
+        assert_eq!(&*expansion, "");
+        assert!(tx.body_budget_exhausted(), "a refused charge fails the stream closed");
+    }
+
+    #[test]
+    fn repeated_scoped_expansions_do_not_accumulate_credit() {
+        use std::sync::Arc;
+
+        use crate::transaction::{BodyBudget, RetainedBodyBudget};
+
+        let mut tx = Transaction::new("macro-repeated");
+        tx.set_tx_variable("payload", vec![b'x'; 4096]);
+        let shared = Arc::new(RetainedBodyBudget::new(512 * 1024));
+        tx.set_body_budget(BodyBudget::new(Arc::clone(&shared)));
+
+        for _ in 0..100 {
+            let expansion = Macro::new("%{TX.payload}").unwrap().expand_scoped(&tx);
+            assert_eq!(expansion.len(), 4096);
+        }
+        assert_eq!(
+            shared.used(),
+            0,
+            "discarded expansions return their credit instead of exhausting the budget"
+        );
+        assert!(!tx.body_budget_exhausted());
     }
 }

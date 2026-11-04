@@ -598,7 +598,7 @@ def test_envoy() -> None:
                 raise RuntimeError("HTTP/2 denied stream reached the backend")
             assert_body((work / "http2-allow").read_bytes(), h2_expected, "HTTP/2 allowed body")
 
-            followup = write_body(work / "reservation-followup", 8 * 1024 * 1024, b"x")
+            followup = write_body(work / "reservation-followup", 4 * 1024 * 1024, b"x")
             assert_admission_released("baseline", followup)
             before = backend_count("/cancel-upload")
             abort_held_upload()

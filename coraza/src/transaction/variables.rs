@@ -31,6 +31,9 @@ use crate::{
     types::RuleVariable,
 };
 
+/// Conservative metadata charged for the `MATCHED_VAR*` copies of one match.
+const MATCHED_VARIABLE_BYTES: usize = 512;
+
 /// The data behind one rule variable in a transaction.
 ///
 /// `S` and `M` are references to [`Single`] and [`Map`], including mutable
@@ -278,6 +281,25 @@ impl Transaction {
         variable_storage!(self, variable, &mut)
     }
 
+    /// Upper bound on the lossy text length of a variable value without allocating.
+    pub(crate) fn variable_value_len(&self, variable: RuleVariable, key: Option<&str>) -> Option<usize> {
+        let lossy_len = |bytes: &[u8]| {
+            if std::str::from_utf8(bytes).is_ok() {
+                bytes.len()
+            } else {
+                bytes.len().saturating_mul(3)
+            }
+        };
+        match (self.collection(variable)?, key) {
+            (VariableCollection::Single(single), None) => Some(lossy_len(single.get_bytes())),
+            (VariableCollection::Map(map), Some(key)) => map.first(key).map(lossy_len),
+            (VariableCollection::Names(_, map), Some(key)) => {
+                map.iter_key(key).next().map(|(stored_key, _)| stored_key.len())
+            },
+            _ => None,
+        }
+    }
+
     /// The value of a single-value variable or the first value under `key`.
     ///
     /// Values with invalid UTF-8 are converted lossily. Rule matching uses the original
@@ -294,6 +316,7 @@ impl Transaction {
     }
 
     /// Find the byte-preserving matches selected by a parsed variable spec.
+    #[cfg(test)]
     pub(crate) fn find_matches(&self, spec: &VariableSpec) -> Vec<MatchData> {
         let collection = self.collection(spec.variable()).map(|collection| match collection {
             VariableCollection::Single(single) => CollectionView::Single(single),
@@ -309,17 +332,16 @@ impl Transaction {
     /// (`internal/corazawaf/transaction.go:681-712`, v3.8.1): a removed key is not counted,
     /// and a count-mode match is never dropped.
     pub(crate) fn find_matches_for_rule(&self, spec: &VariableSpec, id: i32) -> Vec<MatchData> {
-        if !self.removed_rule_targets.contains_key(&id) {
-            return self.find_matches(spec);
-        }
         let collection = self.collection(spec.variable()).map(|collection| match collection {
             VariableCollection::Single(single) => CollectionView::Single(single),
             VariableCollection::Map(map) => CollectionView::Map(map),
             VariableCollection::Names(variable, map) => CollectionView::Names(variable, map),
         });
-        spec.get_matches_filter(collection, |variable, key| {
-            self.is_rule_target_removed(id, variable, key)
-        })
+        spec.get_matches_filter(
+            collection,
+            |variable, key| self.is_rule_target_removed(id, variable, key),
+            self.body_budget.as_ref(),
+        )
     }
 
     /// Set one stored single-value variable.
@@ -334,15 +356,23 @@ impl Transaction {
         {
             let mut captures = outputs.take_captures();
             if let Some((index, value)) = captures.next() {
+                let key = index.to_string();
+                if !self.try_charge_map_insert(key.as_bytes(), &value, 1) {
+                    return;
+                }
                 // Clear the captures of the value matched previously in this rule. Go leaves
                 // them alone: its `resetCaptures` is only used by its tests, so this is a
                 // deliberate deviation, and the seeded keys make it allocation-free.
                 for key in TX_CAPTURE_KEYS.iter().take(10) {
                     self.tx.set_index(key, 0, "");
                 }
-                self.set_tx_variable(&index.to_string(), value);
+                self.set_tx_variable(&key, value);
                 for (index, value) in captures {
-                    self.set_tx_variable(&index.to_string(), value);
+                    let key = index.to_string();
+                    if !self.try_charge_map_insert(key.as_bytes(), &value, 1) {
+                        return;
+                    }
+                    self.set_tx_variable(&key, value);
                 }
             }
         }
@@ -373,6 +403,27 @@ impl Transaction {
 
     /// Record the value and variable name matched by an operator.
     pub(crate) fn record_matched_variable(&mut self, matched: &MatchData) {
+        if self.has_body_budget() {
+            let name_bytes = if matched.key.is_empty() {
+                matched.variable.name().len()
+            } else {
+                matched
+                    .variable
+                    .name()
+                    .len()
+                    .saturating_add(1)
+                    .saturating_add(matched.key.len())
+            };
+            let charge = matched
+                .value
+                .len()
+                .saturating_mul(2)
+                .saturating_add(name_bytes.saturating_mul(2))
+                .saturating_add(MATCHED_VARIABLE_BYTES);
+            if !self.try_charge_body_memory(charge) {
+                return;
+            }
+        }
         let name = if matched.key.is_empty() {
             matched.variable.name().to_owned()
         } else {
@@ -384,23 +435,86 @@ impl Transaction {
     }
 
     /// Update `RULE` values before evaluating a compiled rule.
+    ///
+    /// `msg` and `logdata` can carry macro-expanded body data, so every `RULE`
+    /// value's retained backing is charged like other body-derived map
+    /// storage. The values are rewritten in their buffers for every rule
+    /// evaluated, so [`Transaction::set_rule_value`] tracks each slot's live
+    /// capacity: only growth is admitted, and a shrinking write releases
+    /// nothing because the buffers stay.
     #[expect(clippy::too_many_arguments, reason = "fields mirror the RULE collection")]
     pub(crate) fn set_rule_variables(
         &mut self,
         id: i32,
-        message: Option<String>,
+        message: Option<&str>,
         revision: &str,
-        log_data: Option<String>,
+        log_data: Option<&str>,
         severity: &str,
     ) {
-        self.rule.set_index("id", 0, id.to_string());
-        if let Some(message) = message {
-            self.rule.set_index("msg", 0, message);
+        if !self.set_rule_value("id", id.to_string()) {
+            return;
         }
-        self.rule.set_index("rev", 0, revision);
-        if let Some(log_data) = log_data {
-            self.rule.set_index("logdata", 0, log_data);
+        if let Some(message) = message
+            && !self.set_rule_value("msg", message)
+        {
+            return;
         }
-        self.rule.set_index("severity", 0, severity);
+        if !self.set_rule_value("rev", revision) {
+            return;
+        }
+        if let Some(log_data) = log_data
+            && !self.set_rule_value("logdata", log_data)
+        {
+            return;
+        }
+        self.set_rule_value("severity", severity);
     }
+
+    /// Write one `RULE` value, admitting its slot's growth before it
+    /// allocates.
+    ///
+    /// A replacement rewrites the slot in its buffers, so the charge follows
+    /// the slot's backing capacity rather than the value length: growth is
+    /// admitted before the value vector reallocates, a write that fits is
+    /// free, and a shrinking write keeps the previous charge because the
+    /// capacity is still live. Repeated same-size writes therefore charge
+    /// once, not once per rule. Returns `false` when admission refused.
+    fn set_rule_value(&mut self, key: &str, value: impl AsRef<[u8]>) -> bool {
+        let value = value.as_ref();
+        let slot = self.rule.value_capacity(key, 0);
+        let capacity = slot.unwrap_or(0);
+        let grown = grown_capacity(capacity, value.len());
+        let mut charge = grown.saturating_sub(capacity);
+        if slot.is_none() {
+            // A first insert also takes the key strings, value vector and
+            // index entry that the map-insert overhead covers.
+            charge = charge
+                .saturating_add(key.len().saturating_mul(3))
+                .saturating_add(super::MAP_INSERT_OVERHEAD_BYTES);
+        }
+        if !self.try_charge_body_memory(charge) {
+            return false;
+        }
+        self.rule.set_index(key, 0, value);
+        // Settle the prediction against the capacity the slot actually took:
+        // a first insert copies exactly, while growth doubles.
+        let actual = self.rule.value_capacity(key, 0).unwrap_or(0);
+        if actual < grown {
+            self.release_body_memory(grown - actual);
+        } else if actual > grown {
+            // A short prediction is charged back; a refusal exhausts the
+            // budget and the stream fails closed.
+            let _ = self.try_charge_body_memory(actual - grown);
+        }
+        true
+    }
+}
+
+/// Capacity a value slot holds after writing `value_len` bytes into a slot
+/// with `capacity`, matching `Vec`'s doubling reservation.
+fn grown_capacity(capacity: usize, value_len: usize) -> usize {
+    if value_len <= capacity {
+        return capacity;
+    }
+    capacity.saturating_mul(2).max(value_len).max(8)
 }

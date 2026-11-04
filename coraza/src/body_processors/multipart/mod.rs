@@ -23,7 +23,33 @@
 mod media_type;
 mod parser;
 
+use std::mem::size_of;
+
+use parser::MAX_PARTS;
 pub(crate) use parser::Part;
+
+/// Upper bound on parser-owned allocations before parsing starts.
+///
+/// Each part and each CRLF-terminated line can allocate a bounded amount of
+/// metadata; all payload and metadata bytes are copies of input bytes. Vector
+/// capacities can double, so both counts and copied bytes are doubled.
+pub(crate) fn allocation_bound(body: &[u8]) -> usize {
+    let delimiters = body
+        .windows(4)
+        .filter(|window| *window == b"\r\n--")
+        .count()
+        .saturating_add(1)
+        .min(MAX_PARTS);
+    let lines = body
+        .windows(2)
+        .filter(|window| *window == b"\r\n")
+        .count()
+        .saturating_add(1);
+    body.len()
+        .saturating_mul(2)
+        .saturating_add(delimiters.saturating_mul(size_of::<Part<'_>>()).saturating_mul(2))
+        .saturating_add(lines.saturating_mul(256).saturating_mul(2))
+}
 
 /// Whether `name` is one MIME token, the shape Go's `textproto` canonicalizes. A name
 /// that holds a space is not a token, and Go keeps it as sent (go.dev/issue/34540).

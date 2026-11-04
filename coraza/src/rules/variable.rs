@@ -26,8 +26,12 @@ use regex::Regex;
 pub(crate) use crate::utils::lowercase_like_go;
 use crate::{
     collection::{Map, MatchData, Single},
+    transaction::BodyBudget,
     types::RuleVariable,
 };
+
+/// Conservative per-match storage charged before a selected value is copied.
+const MATCH_SELECTION_BYTES: usize = 128;
 
 /// A borrowed collection selected for a rule variable.
 #[derive(Clone, Copy)]
@@ -175,15 +179,19 @@ impl VariableSpec {
     }
 
     /// Return the matches from the collection associated with this variable.
+    #[cfg(test)]
     pub(crate) fn get_matches(&self, collection: Option<CollectionView<'_>>) -> Vec<MatchData> {
-        self.get_matches_filter(collection, |_, _| false)
+        self.get_matches_filter(collection, |_, _| false, None)
     }
 
     /// Return matches after excluding transaction-local targets before count aggregation.
+    ///
+    /// When `budget` is set, each copied value is charged before its allocation.
     pub(crate) fn get_matches_filter(
         &self,
         collection: Option<CollectionView<'_>>,
         mut excluded: impl FnMut(RuleVariable, &str) -> bool,
+        budget: Option<&BodyBudget>,
     ) -> Vec<MatchData> {
         let Some(collection) = collection.filter(|view| {
             view.variable() == self.variable
@@ -201,6 +209,15 @@ impl VariableSpec {
                 if count_mode {
                     count = count.saturating_add(1);
                 } else {
+                    // A non-UTF-8 key can expand threefold in its lossy text view.
+                    let charge = key
+                        .len()
+                        .saturating_mul(3)
+                        .saturating_add(value.len())
+                        .saturating_add(MATCH_SELECTION_BYTES);
+                    if budget.is_some_and(|budget| !budget.try_charge(charge)) {
+                        return;
+                    }
                     matches.push(MatchData::new(variable, String::from_utf8_lossy(key), value));
                 }
             };
